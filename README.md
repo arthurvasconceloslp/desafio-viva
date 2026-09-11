@@ -1,36 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Desafio Farmácia Viva — Inscrição
 
-## Getting Started
+Sistema de inscrição para a corrida de aniversário da Farmácia Viva. Next.js (App Router) + Supabase.
 
-First, run the development server:
+## Rodando localmente
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Antes de inscrições e o painel admin funcionarem de ponta a ponta, copie `.env.example` para `.env.local` e preencha:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — em Project Settings > API no painel do Supabase.
+- `ADMIN_PASSWORD` — a senha de acesso ao painel `/admin`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+O schema do banco está em `supabase/schema.sql` — rode esse script no SQL Editor do Supabase antes de usar.
 
-## Learn More
+## Estrutura
 
-To learn more about Next.js, take a look at the following resources:
+- `/` — página do evento
+- `/inscricao` — formulário de inscrição
+- `/inscricao/confirmacao` — mostra o número de peito gerado
+- `/percurso` — informações do percurso (placeholder até serem definidas)
+- `/admin` — login do painel administrativo (senha única)
+- `/admin/dashboard` — lista de inscritos + exportação CSV
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Configurações editáveis do evento (nome, data, local) ficam em `src/lib/config.ts`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deploy
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Hospedagem prevista na Vercel. Configure as mesmas variáveis de ambiente do `.env.local` nas Environment Variables do projeto na Vercel.
