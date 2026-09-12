@@ -33,6 +33,7 @@ Aplicado e testado:
 - **Honeypot anti-spam** no formulário de inscrição: campo oculto (`empresa`, `aria-hidden`, fora da tela, `tabIndex={-1}`) que só um bot preencheria — se vier preenchido, a Server Action finge sucesso sem gravar nada no banco.
 - `npm audit`: 0 vulnerabilidades nas dependências.
 - Confirmado que não há risco de SQL injection (todo acesso ao Supabase é via client parametrizado, nunca SQL concatenado) nem XSS (React escapa toda saída, nenhum uso de `dangerouslySetInnerHTML`).
+- Removido o link "Acesso administrativo" do rodapé (`src/components/SiteFooter.tsx`), a pedido do usuário. **Importante**: isso é só discrição, não é uma proteção real — `/admin` continua acessível direto pela URL, e a segurança de verdade continua sendo a senha + cookie de sessão verificado no servidor (`src/proxy.ts`), não a ausência de um link visível.
 
 **Decidido com o usuário**: manter só a validação de dígito verificador de CPF (sem consulta paga à Receita Federal) e usar **email** (não SMS) para a notificação de confirmação — ver "Validação de CPF" e "Notificação por email" abaixo.
 
