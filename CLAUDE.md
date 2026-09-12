@@ -64,6 +64,8 @@ O envio é **melhor-esforço**: se o Resend falhar por qualquer motivo, o erro s
 
 O usuário confirmou que a farmácia **não tem domínio próprio ainda**. Verificar um domínio no Resend em si é gratuito, mas exige possuir um domínio, o que normalmente tem custo de registro (~R$40/ano em `.com.br` via registro.br, ou ~US$10-15/ano em `.com`) se comprado do zero — não decidido ainda se/quando isso será feito, não é bloqueante (o email já funciona em modo melhor-esforço). **Dica para quando for registrar**: um único domínio serve tanto para o Resend (envio de email) quanto para apontar o site na Vercel (em vez do endereço padrão `*.vercel.app`) — vale registrar um só para os dois usos, não dois separados.
 
+**WhatsApp como alternativa foi considerado e descartado** (perguntado pelo usuário). Diferente do email, WhatsApp não depende de domínio, mas exige verificação de empresa na Meta e cobra por mensagem via API oficial (Twilio/Zenvia/Meta Cloud API) além de uma cota gratuita limitada — mais caro e mais burocrático que o email para uma corrida pequena e gratuita. Alternativas não-oficiais (automatizar um número pessoal) foram descartadas por violarem os termos do WhatsApp e arriscarem banir o número. Decisão: manter só email.
+
 ## Nome do evento
 
 **Desafío Farmácia Viva** (confirmar com o usuário se é "Desafío" com acento espanhol de propósito ou "Desafio" em português — foi escrito com acento na conversa, mas pode ter sido erro de digitação). Por padrão o sistema usa "Desafio Farmácia Viva" (grafia em português), configurável em um único lugar (`src/lib/config.ts`).
