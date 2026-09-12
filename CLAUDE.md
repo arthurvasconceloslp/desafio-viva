@@ -40,6 +40,15 @@ Aplicado e testado:
 **Ainda em aberto**:
 - Sem limite de tentativas de senha no login do admin nem limite de envios repetidos no formulário público — mitigado parcialmente pelo honeypot, mas uma defesa mais forte (rate limiting de verdade) exigiria um serviço externo com estado compartilhado (ex: Upstash Redis), que é uma nova integração e tem custo/conta a criar. Não implementado ainda; perguntar ao usuário se quer investir nisso.
 
+### Teste com OWASP ZAP (colega do usuário) — investigação de "senha vazando"
+
+Um colega do usuário rodou o OWASP ZAP contra o site (não confirmado se contra produção ou local) e reportou algo como "o banco está vazando senha e tal". Investiguei os três lugares mais prováveis de um vazamento real e **nenhum mostrou problema**:
+1. Cookie de sessão do admin: testado `document.cookie` numa aba autenticada em produção → retorna vazio, confirmando `httpOnly` (JS não consegue ler).
+2. HTTPS: `http://` redireciona para `https://` (308) — senha nunca trafega sem criptografia.
+3. Bundles JS do site: baixados e vasculhados por `ADMIN_PASSWORD`, `sb_secret`, `RESEND_API_KEY`, `checkAdminPassword`, `createHmac`, `createHash`, `KNOWN_FAKE_CPFS` — nenhuma ocorrência. As Server Actions do Next.js já enviam só um ID criptografado ao cliente (ex: `$ACTION_KEY` = hash opaco), nunca o código de verdade.
+
+Hipótese mais provável: o ZAP, atuando como proxy, está mostrando o corpo da requisição POST do login (a senha aparece em texto plano ali, como em qualquer formulário de login do mundo, protegida em trânsito pelo HTTPS) — não é a mesma coisa que um vazamento real. **Pendente**: pedi o nome exato do alerta do ZAP (ex: "Password Autocomplete", "Session Cookie without Secure Flag") pra confirmar se é falso positivo ou algo real antes de mexer em mais alguma coisa. Também alertei que rodar o ZAP (scan ativo) contra produção pode gerar inscrições de teste reais no banco (o campo Nome não filtra HTML/scripts, só CPF e email têm validação rígida) — se aparecerem registros estranhos no admin, provavelmente são disso, seguro de limpar.
+
 ### CPF: reforço além do dígito verificador
 
 Além da checagem de dígito verificador (já existia), `src/lib/cpf.ts` agora também rejeita uma lista de CPFs **matematicamente válidos mas publicamente conhecidos como "CPF de teste"** — números que circulam em tutoriais/geradores e que pessoas mal-intencionadas digitam de propósito para passar por formulários sem usar um CPF de verdade. Descobri isso na prática: o CPF que eu vinha usando em todos os testes deste projeto (`111.444.777-35`) é exatamente um desses. A lista (`KNOWN_FAKE_CPFS`) inclui hoje `111.444.777-35`, `123.456.789-09`, `529.982.247-25` e `168.995.350-09` — é best-effort, não exaustiva, e pode ser expandida se o admin encontrar outros casos.
