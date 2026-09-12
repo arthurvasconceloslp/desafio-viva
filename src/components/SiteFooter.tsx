@@ -6,11 +6,6 @@ export function SiteFooter() {
       <p>
         {EVENT.name} — {new Date().getFullYear()}
       </p>
-      <p className="mt-1">
-        <a href="/admin" className="hover:text-gray-600">
-          Acesso administrativo
-        </a>
-      </p>
     </footer>
   );
 }
