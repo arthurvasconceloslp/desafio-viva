@@ -75,8 +75,8 @@ O usuário confirmou que a farmácia **não tem domínio próprio ainda**. Verif
 - **Sem camiseta** — não há brinde de camiseta, então não perguntar tamanho no formulário.
 - **Premiação apenas para os 3 primeiros colocados** — isso é só informativo na página do evento, não impacta o sistema de inscrição.
 - **Percurso/rota ainda não definido** — o usuário não tem GPX nem link do Strava/Google Maps ainda. Deixar uma aba/seção "Percurso" na página com aviso de "em breve" / "informações do percurso serão divulgadas em breve". Implementar a exibição real do mapa depois, quando o usuário fornecer um link (Strava/Google Maps) ou arquivo GPX.
-- **Data e local do evento**: ainda não definidos, o usuário vai preenchendo depois. Ficam em `src/lib/config.ts` como constantes fáceis de editar (não hardcoded espalhado pelo código).
-- **Logo e cores**: arquivo `LOGO.png` já está na pasta do projeto (copiado para `public/`). Cores de identidade visual extraídas da logo e configuradas no tema Tailwind (vermelho ~#DC3545 como cor primária).
+- **Data e local do evento**: definidos. Data: **18 de outubro de 2026**. Local de concentração: **Farmácia Viva, em frente à Praça da Bela Vista**. Editável em `src/lib/config.ts` (`EVENT.dateLabel` / `EVENT.locationLabel`).
+- **Logo e cores**: arquivo `LOGO.png` já está na pasta do projeto (copiado para `public/logo.png`, usado no header/home, e também como favicon via `src/app/icon.png` — convenção de ícone do Next.js App Router, substituiu o `favicon.ico` padrão do scaffold). Cores de identidade visual extraídas da logo e configuradas no tema Tailwind (vermelho ~#DC3545 como cor primária).
 
 ## Campos do formulário de inscrição
 
@@ -104,7 +104,7 @@ Sequencial, gerado automaticamente na confirmação da inscrição (1, 2, 3, ...
 - **Banco de dados**: Supabase (plano gratuito)
 - **Hospedagem**: Vercel (plano gratuito)
 
-O usuário **não tem conta em nenhum dos dois serviços ainda** (Supabase nem Vercel). Vai ser necessário guiá-lo passo a passo na criação das contas gratuitas e na obtenção das chaves de API (Supabase URL + anon key) antes do deploy funcionar de ponta a ponta. Isso pode ser feito em paralelo ao desenvolvimento local (dá pra desenvolver localmente com Supabase antes de fazer deploy).
+**Deploy feito e site no ar.** Código no GitHub em `https://github.com/arthurvasconceloslp/desafio-viva` (repositório privado, branch `main`), conectado à Vercel via login com GitHub. Variáveis de ambiente (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, `RESEND_API_KEY`) configuradas no dashboard da Vercel, copiadas de `.env.local`. Todo `git push` para `main` dispara redeploy automático na Vercel.
 
 ## Estrutura de dados (Supabase)
 
@@ -131,10 +131,11 @@ SQL de criação em `supabase/schema.sql`.
 ## Pendências / perguntas em aberto para quando o usuário retomar
 
 - Confirmar grafia final do nome do evento ("Desafío" vs "Desafio") — hoje está como "Desafio Farmácia Viva" em `src/lib/config.ts`.
-- Definir data e local do evento (editar `src/lib/config.ts`).
+- ~~Definir data e local do evento~~ — feito: 18/10/2026, concentração na Farmácia Viva em frente à Praça da Bela Vista.
 - ~~Definir a senha do painel admin~~ — feito, está em `.env.local` (`ADMIN_PASSWORD`).
 - ~~Criar conta no Supabase e configurar `.env.local`~~ — feito. Variáveis reais: `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` (chave secreta `sb_secret_...`, não a `sb_publishable_...`) — não usamos Supabase Auth nem anon key, tudo passa pela service role no servidor.
+- ~~Criar conta na Vercel e fazer o deploy~~ — feito, site no ar (ver "Stack técnica escolhida" acima para a URL do repositório).
+- ~~Trocar o favicon pela logo~~ — feito via `src/app/icon.png`.
 - Decidir sobre rate limiting real (login admin + spam de inscrição) — ver seção Segurança acima.
-- **Verificar um domínio no Resend antes do lançamento real** (ver seção "Notificação por email" acima) — sem isso, só o email da conta Resend recebe as confirmações.
-- Criar conta na Vercel e conectar o repositório para deploy. Lembrar de configurar lá as mesmas variáveis de `.env.local`, incluindo `RESEND_API_KEY`.
-- Antes do lançamento real: rodar de novo `alter table public.inscricoes alter column id restart with 1;` se houver mais testes manuais depois deste ponto.
+- **Verificar um domínio no Resend antes de divulgar a inscrição para o público** (ver seção "Notificação por email" acima) — sem isso, só o email da conta Resend recebe as confirmações.
+- Se houver mais testes manuais de inscrição depois deste ponto, rodar de novo `alter table public.inscricoes alter column id restart with 1;` antes do lançamento real.
