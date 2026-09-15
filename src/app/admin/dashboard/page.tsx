@@ -6,7 +6,7 @@ import {
 } from "@/lib/supabase-admin";
 import { formatCPF } from "@/lib/cpf";
 import { formatBRL } from "@/lib/config";
-import { logoutAdmin } from "../actions";
+import { logoutAdmin, verificarPagamentosPendentes } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -86,7 +86,16 @@ export default async function AdminDashboardPage() {
             )}
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
+          <form action={verificarPagamentosPendentes}>
+            <button
+              type="submit"
+              title="Pergunta ao Mercado Pago o que aconteceu com as inscrições ainda pendentes"
+              className="rounded-full border border-brand px-5 py-2 text-sm font-semibold text-brand transition-colors hover:bg-brand-light"
+            >
+              Verificar pagamentos
+            </button>
+          </form>
           <a
             href="/api/admin/export"
             className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-dark"

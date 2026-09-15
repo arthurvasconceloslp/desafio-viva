@@ -27,6 +27,67 @@ type ConfirmacaoRow = {
 };
 
 /**
+ * Varre as inscrições ainda pendentes e pergunta ao Mercado Pago o que
+ * aconteceu com cada uma.
+ *
+ * Existe porque o webhook é a única peça do sistema fora do nosso controle:
+ * ele depende de configuração no painel do Mercado Pago, de um segredo que
+ * pode ser regenerado e de o serviço deles conseguir alcançar nosso servidor.
+ * Esta varredura não depende de nada disso — é o nosso servidor perguntando,
+ * com o nosso token. Se o webhook falhar em silêncio, quem fechou a aba ainda
+ * assim é confirmado aqui.
+ *
+ * Reaproveita `reconcileOrder`, então continua valendo a mesma idempotência:
+ * uma inscrição já paga não ganha outro número de peito nem outro email.
+ */
+export async function reconciliarPendentes(
+  limite = 50
+): Promise<{ verificadas: number; confirmadas: number; expiradas: number }> {
+  const supabase = getSupabaseAdmin();
+
+  const { data, error } = await supabase
+    .from("inscricoes")
+    .select("id, mp_order_id, pix_expira_em")
+    .eq("payment_status", "pendente")
+    .not("mp_order_id", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(limite);
+
+  if (error) {
+    throw new Error(`Falha ao listar inscrições pendentes: ${error.message}`);
+  }
+
+  let confirmadas = 0;
+  let expiradas = 0;
+
+  for (const linha of data ?? []) {
+    try {
+      const status = await reconcileOrder(linha.mp_order_id as string);
+      if (status === "pago") confirmadas++;
+      else if (status === "expirado") expiradas++;
+      else if (
+        status === "pendente" &&
+        linha.pix_expira_em &&
+        new Date(linha.pix_expira_em as string).getTime() < Date.now()
+      ) {
+        // O Mercado Pago às vezes demora a marcar a ordem como expirada.
+        await supabase
+          .from("inscricoes")
+          .update({ payment_status: "expirado" })
+          .eq("id", linha.id)
+          .eq("payment_status", "pendente");
+        expiradas++;
+      }
+    } catch (erro) {
+      // Uma ordem problemática não pode interromper a varredura das outras.
+      console.error(`Falha ao reconciliar a ordem ${linha.mp_order_id}:`, erro);
+    }
+  }
+
+  return { verificadas: data?.length ?? 0, confirmadas, expiradas };
+}
+
+/**
  * Consulta o Mercado Pago sobre uma ordem e aplica o resultado no banco.
  * Devolve o status final da inscrição.
  */
