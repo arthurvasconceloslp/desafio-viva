@@ -224,49 +224,40 @@ continuam sendo rejeitados de primeira.
 aparecer `Webhook do Mercado Pago rejeitado (SignatureMismatch)`, o problema é outro e vale
 investigar — mas o participante ainda assim é confirmado pela tela de espera.
 
-### ⚠️ Armadilha real e NÃO RESOLVIDA: a assinatura do webhook nunca confere
+### A assinatura do webhook: o mistério e a solução
 
-**Sintoma**: o Mercado Pago chama nosso webhook normalmente (dá para ver nos logs da Vercel,
-com `request-id` em UUID de verdade), mas a assinatura do cabeçalho `x-signature` não fecha com
-nenhum segredo configurado no painel. Antes da correção, isso significava responder 401 para
-toda notificação legítima — e, portanto, **nenhuma confirmação de pagamento para quem fecha a
-aba antes de pagar**, silenciosamente.
+**Resolvido em 15/09/2026.** Durante quase toda a implementação, as notificações reais do Mercado
+Pago chegavam com uma assinatura que não fechava com o segredo configurado. Antes da correção
+isso significava responder 401 para toda notificação legítima — e, portanto, nenhuma confirmação
+para quem fecha a aba antes de pagar, silenciosamente.
 
-**O que foi descartado**, testando offline contra assinaturas reais capturadas em produção
-(mais de 2.000 combinações ao todo):
-- os dois nomes possíveis do parâmetro de id na query (`data.id` e `id`) — o Mercado Pago manda
-  `data.id`, presente e em MAIÚSCULAS;
-- grafia do id: maiúscula, minúscula e ausente do manifesto;
-- todos os subconjuntos de campos plausíveis (`id`, `request-id`, `ts`, `type`,
-  `external_reference`, `application_id`), com e sem `;` final;
-- o id da ordem, o id do pagamento, a referência externa e o id da aplicação como valor do `id:`;
-- a chave do HMAC como texto e como os 32 bytes decodificados do hexadecimal;
-- o segredo original **e** um regenerado pelo usuário no painel.
+**A causa**: o segredo que tínhamos era o do **modo produtivo**, enquanto o site rodava com
+credenciais de **teste**. O Mercado Pago assina as notificações de teste com o segredo do modo de
+teste, que é outro. As duas pontas nunca podiam bater. Assim que o site passou a usar o Access
+Token de produção, a assinatura passou a validar de primeira — confirmado nos logs: o `POST
+/api/webhooks/mercadopago` aparece como `info`, sem o `warn` de diagnóstico que acompanhava todas
+as notificações anteriores.
 
-**Evidência de que o formato está certo e o problema é a chave**: duas notificações chegam com o
-mesmo `ts` e `v1` diferentes, e a única coisa que varia entre elas é o `request-id` — ou seja, o
-`request-id` está mesmo no manifesto, exatamente como a documentação descreve.
+**Lição que custou caro**: antes de investigar o formato de um HMAC, confirmar que os dois lados
+estão no mesmo ambiente. Foram testadas offline mais de 2.000 combinações de manifesto (nomes de
+parâmetro, grafia do id, subconjuntos de campos, chave como texto e como bytes) — nenhuma podia
+funcionar, porque o problema nunca esteve no formato. O sinal que deveria ter levantado a
+suspeita mais cedo: o usuário afirmou que a "assinatura secreta" era **a mesma** nos modos
+produtivo e de teste, o que não é o normal e indicava que ele só tinha visto um dos campos.
 
-**Causa provável, não confirmada**: o segredo que o painel exibe não é o usado para assinar.
-O usuário reportou que a URL está cadastrada nos dois modos (produtivo e teste) e que a
-"assinatura secreta" mostrada é a mesma string nos dois — o que é suspeito, já que o normal
-seria haver uma por modo. Se alguém retomar isso, começar por aí.
+**O código continua tolerante de propósito.** Mesmo agora que a assinatura confere, o handler
+segue processando notificações cuja assinatura não valide, desde que **a ordem citada exista no
+nosso banco**. Isso foi decidido com o usuário quando a assinatura estava quebrada, e vale manter:
+se o segredo for rotacionado um dia, ou se o Mercado Pago mudar o esquema, o pagamento continua
+sendo confirmado em vez de parar em silêncio. A segurança não depende disso — o handler nunca
+acreditou no conteúdo da notificação; ela só diz QUAL ordem mudou, e o que aconteceu vem de uma
+consulta nossa à API do Mercado Pago. Uma notificação forjada não confirma inscrição não paga.
 
-**Como ficou (decisão tomada com o usuário)**: o handler passou a **seguir mesmo sem assinatura
-válida**, com uma trava. A justificativa é que a assinatura nunca foi o que impede fraude aqui:
-este handler jamais acreditou no conteúdo da notificação — ela só diz QUAL ordem mudou, e o que
-aconteceu vem de uma consulta nossa à API do Mercado Pago, autenticada com o nosso token. Uma
-notificação forjada dizendo "a ordem X foi paga" não confirma nada, porque perguntamos ao
-Mercado Pago e ele responde a verdade.
+Toda falha de assinatura continua registrada no log. **Se `Webhook do Mercado Pago com assinatura
+não conferida` voltar a aparecer, é sinal de que o segredo saiu de sincronia** — vale conferir,
+mesmo que os pagamentos continuem sendo confirmados.
 
-O que sobrava era risco de **abuso** (fazer o servidor gastar consultas à toa), e contra isso
-entra a trava: sem assinatura válida, a ordem citada **precisa existir no nosso banco**. O id é
-uma string opaca de 32 caracteres que só existe aqui e na tela de quem se inscreveu. Ordem
-desconhecida é descartada sem consulta externa; ordem já paga responde sem consulta também.
-
-A assinatura continua sendo verificada e toda falha vai para o log — a divergência não pode
-virar esquecimento. **Se um dia o segredo certo aparecer, nada precisa mudar no código**: a
-validação volta a passar sozinha e a trava deixa de ser exercida.
+### ⚠️ Armadilha menor: o sandbox do Mercado Pago aprova quando quer
 
 ### ⚠️ Armadilha menor: o sandbox do Mercado Pago aprova quando quer
 
@@ -367,11 +358,11 @@ principal (formulário → QR → confirmação) chegou a ser conferido visualme
 2. ~~Trocar para credenciais de produção~~ — feito em 15/09/2026.
 3. **Resetar a sequência do peito antes de divulgar**, porque os testes consumiram números:
    `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
-4. **Cadastrar a URL do webhook na aplicação de produção** (ver "Conta de produção" abaixo):
-   `https://desafio-viva.vercel.app/api/webhooks/mercadopago`, tópico de **ordens**.
+4. ~~Cadastrar a URL do webhook na aplicação de produção~~ — não era necessário: o webhook já
+   estava configurado e, em produção, a assinatura passou a validar corretamente.
 5. **Verificar um domínio no Resend** quando quiser voltar a enviar email de confirmação. Por ora
    o usuário optou por avisar manualmente, e a página `/consulta` cobre a lacuna.
-6. Opcional: retomar a investigação da assinatura do webhook. Não é bloqueante.
+6. ~~Retomar a investigação da assinatura do webhook~~ — resolvido; era divergência de ambiente.
 
 ### Conta de produção (dinheiro de verdade)
 
@@ -385,13 +376,10 @@ a ele e foi uma escolha consciente. Se um dia for preciso mudar para uma conta c
 momento certo é *antes* de haver inscritos pagantes — depois, os pagamentos ficam espalhados
 entre duas contas.
 
-**Pendência conhecida**: a aplicação de produção (`5474218114318934`) é diferente da usada nos
-testes (`2443225058617655`), e **a configuração de webhook vive dentro da aplicação**. Enquanto a
-URL não for cadastrada na aplicação nova, o Mercado Pago não notifica o site. Isso não impede
-ninguém de se inscrever — a tela de espera confirma em 6 segundos, e há o botão no admin e o cron
-diário —, mas quem fechar a aba só é confirmado por esses caminhos mais lentos. A `MP_WEBHOOK_SECRET`
-configurada ainda é a da aplicação antiga; como a validação de assinatura já não é bloqueante
-(ver a seção da assinatura), isso não quebra nada, mas vale atualizar quando a nova for criada.
+**O webhook é o mesmo e funciona.** Cheguei a supor que a aplicação de produção fosse outra (o
+id no meio do Access Token mudou) e que seria preciso recadastrar a URL — o usuário corrigiu, e o
+teste confirmou: criando uma ordem com o token de produção, a notificação chega normalmente e
+**com a assinatura válida**. A configuração de webhook e a `MP_WEBHOOK_SECRET` continuam corretas.
 
 ### Página "Meu número" (`/consulta`)
 
