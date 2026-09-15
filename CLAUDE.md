@@ -6,7 +6,7 @@ Sistema web de inscrição para a corrida de comemoração de aniversário da fa
 
 Implementação completa do código: todas as páginas, formulário de inscrição com Server Action + validação (zod, incluindo checagem de dígito verificador de CPF), painel admin com login por senha única (sessão via cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, substituiu `middleware.ts`). `npm run build` e `npm run lint` passam sem erros.
 
-**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Ainda não foi publicado na Vercel.**
+**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Publicado na Vercel e testado no site em produção**, ainda com credenciais de teste do Mercado Pago.
 
 Testado de ponta a ponta no navegador de verdade (Claude in Chrome) com Supabase propositalmente desconectado: home, formulário de inscrição (erro de validação por campo, banner geral de erro, fallback "banco não conectado"), login admin (senha errada, senha certa, dashboard, logout, proteção de rota pós-logout). Dois bugs reais de UX foram encontrados e corrigidos durante esse teste:
 1. O React 19 reseta o `<form action={...}>` nativamente após toda submissão de Server Action. Como os inputs eram não-controlados, qualquer erro de validação apagava tudo que o usuário tinha digitado. Corrigido tornando os campos de `InscricaoForm` controlados (`useState` + `value`/`onChange`).
@@ -125,20 +125,34 @@ Fluxo completo:
 5. `/inscricao/confirmacao?token=...` busca o número **no banco** (nunca na URL) e mostra o peito.
    Se ainda não estiver pago, redireciona de volta para a tela de pagamento.
 
-### Dois caminhos de confirmação (de propósito)
+### Três caminhos de confirmação (de propósito)
 
 O pagamento por Pix é assíncrono, então quem avisa que o dinheiro entrou **não pode ser o
-navegador do participante**. Existem dois caminhos, e ambos passam pela mesma função idempotente:
+navegador do participante**. Há três caminhos independentes, e todos passam pela mesma função
+idempotente (`src/lib/pagamento.ts`):
 
-- **Webhook** (`src/app/api/webhooks/mercadopago/route.ts`) — o caminho confiável, e o único que
-  funciona para quem fechou a aba.
-- **Consulta da própria tela de espera** (`/api/inscricao/status`) — consulta o Mercado Pago a cada
-  poll enquanto a inscrição está pendente. Faz a confirmação aparecer na hora para quem está
-  olhando a tela **e** serve de rede de segurança se o webhook estiver mal configurado (risco real
-  numa primeira integração).
+1. **Consulta da tela de espera** (`/api/inscricao/status`) — enquanto o participante olha o QR
+   code, a página pergunta ao Mercado Pago a cada 6 segundos. Confirma em segundos.
+2. **Webhook** (`src/app/api/webhooks/mercadopago/route.ts`) — atende quem fechou a aba.
+   Confirma em segundos. **Leia a seção sobre a assinatura antes de mexer aqui.**
+3. **Varredura de pendentes** (`reconciliarPendentes`, em `src/lib/pagamento.ts`) — lista as
+   inscrições ainda pendentes e pergunta ao Mercado Pago sobre cada uma. Não depende de webhook,
+   de assinatura, nem de o Mercado Pago conseguir alcançar nosso servidor. Dois gatilhos: o cron
+   da Vercel (`vercel.json`) e o botão **"Verificar pagamentos"** no painel admin.
 
-O webhook **nunca** confia no corpo da notificação para decidir que algo foi pago: a notificação só
-diz *qual ordem mudou*; o que aconteceu vem de uma consulta à API do Mercado Pago logo depois.
+O terceiro caminho existe porque o webhook é a única peça fora do nosso controle — e ele
+realmente deu problema (ver a seção da assinatura). Com ele, mesmo que o webhook pare de
+funcionar um dia, ninguém fica sem confirmação: o administrador clica no botão, ou o cron pega
+no dia seguinte.
+
+**Limitação do cron**: está agendado uma vez por dia (`0 3 * * *`) porque o **plano Hobby da
+Vercel rejeita, no deploy**, qualquer expressão que rode mais de uma vez por dia — confirmado na
+documentação oficial. Num plano Pro, basta trocar a expressão em `vercel.json` por algo como
+`*/5 * * * *`; nada mais precisa mudar.
+
+O webhook **nunca** confia no corpo da notificação para decidir que algo foi pago: a notificação
+só diz *qual ordem mudou*; o que aconteceu vem de uma consulta à API do Mercado Pago logo depois.
+Essa é a regra que sustenta a segurança do endpoint.
 
 ### Idempotência — onde ela realmente mora
 
@@ -210,13 +224,69 @@ continuam sendo rejeitados de primeira.
 aparecer `Webhook do Mercado Pago rejeitado (SignatureMismatch)`, o problema é outro e vale
 investigar — mas o participante ainda assim é confirmado pela tela de espera.
 
+### ⚠️ Armadilha real e NÃO RESOLVIDA: a assinatura do webhook nunca confere
+
+**Sintoma**: o Mercado Pago chama nosso webhook normalmente (dá para ver nos logs da Vercel,
+com `request-id` em UUID de verdade), mas a assinatura do cabeçalho `x-signature` não fecha com
+nenhum segredo configurado no painel. Antes da correção, isso significava responder 401 para
+toda notificação legítima — e, portanto, **nenhuma confirmação de pagamento para quem fecha a
+aba antes de pagar**, silenciosamente.
+
+**O que foi descartado**, testando offline contra assinaturas reais capturadas em produção
+(mais de 2.000 combinações ao todo):
+- os dois nomes possíveis do parâmetro de id na query (`data.id` e `id`) — o Mercado Pago manda
+  `data.id`, presente e em MAIÚSCULAS;
+- grafia do id: maiúscula, minúscula e ausente do manifesto;
+- todos os subconjuntos de campos plausíveis (`id`, `request-id`, `ts`, `type`,
+  `external_reference`, `application_id`), com e sem `;` final;
+- o id da ordem, o id do pagamento, a referência externa e o id da aplicação como valor do `id:`;
+- a chave do HMAC como texto e como os 32 bytes decodificados do hexadecimal;
+- o segredo original **e** um regenerado pelo usuário no painel.
+
+**Evidência de que o formato está certo e o problema é a chave**: duas notificações chegam com o
+mesmo `ts` e `v1` diferentes, e a única coisa que varia entre elas é o `request-id` — ou seja, o
+`request-id` está mesmo no manifesto, exatamente como a documentação descreve.
+
+**Causa provável, não confirmada**: o segredo que o painel exibe não é o usado para assinar.
+O usuário reportou que a URL está cadastrada nos dois modos (produtivo e teste) e que a
+"assinatura secreta" mostrada é a mesma string nos dois — o que é suspeito, já que o normal
+seria haver uma por modo. Se alguém retomar isso, começar por aí.
+
+**Como ficou (decisão tomada com o usuário)**: o handler passou a **seguir mesmo sem assinatura
+válida**, com uma trava. A justificativa é que a assinatura nunca foi o que impede fraude aqui:
+este handler jamais acreditou no conteúdo da notificação — ela só diz QUAL ordem mudou, e o que
+aconteceu vem de uma consulta nossa à API do Mercado Pago, autenticada com o nosso token. Uma
+notificação forjada dizendo "a ordem X foi paga" não confirma nada, porque perguntamos ao
+Mercado Pago e ele responde a verdade.
+
+O que sobrava era risco de **abuso** (fazer o servidor gastar consultas à toa), e contra isso
+entra a trava: sem assinatura válida, a ordem citada **precisa existir no nosso banco**. O id é
+uma string opaca de 32 caracteres que só existe aqui e na tela de quem se inscreveu. Ordem
+desconhecida é descartada sem consulta externa; ordem já paga responde sem consulta também.
+
+A assinatura continua sendo verificada e toda falha vai para o log — a divergência não pode
+virar esquecimento. **Se um dia o segredo certo aparecer, nada precisa mudar no código**: a
+validação volta a passar sozinha e a trava deixa de ser exercida.
+
+### ⚠️ Armadilha menor: o sandbox do Mercado Pago aprova quando quer
+
+O gatilho de teste `payer.first_name = "APRO"` aprova o Pix automaticamente, mas **o tempo varia
+de 6 segundos a mais de 10 minutos, e às vezes a ordem simplesmente não aprova**. Duas ordens
+criadas lado a lado com o mesmo corpo aprovaram em 50s e 80s. Isso levou a duas investigações
+falsas durante o desenvolvimento (suspeitei do `callback_url` e do email do pagador; um teste
+A/B controlado descartou o `callback_url`).
+
+**Lição**: ao testar contra o sandbox, nunca concluir "está quebrado" porque o pagamento não
+aprovou — confirmar o estado consultando a ordem na API antes de sair caçando bug no nosso lado.
+
 ### Códigos de resposta do webhook (importam)
 
-- **401** — assinatura inválida (`WebhookSignatureValidator` do SDK, com `toleranceSeconds: 300`
-  contra replay).
-- **200** — inclusive para eventos que decidimos ignorar (tópico que não é de ordem, ordem
-  desconhecida). Se devolvêssemos erro, o Mercado Pago reenviaria para sempre.
+- **200** — o caso normal, e também para eventos que decidimos ignorar (tópico que não é de
+  ordem, ordem desconhecida, ordem já paga). Se devolvêssemos erro, o Mercado Pago reenviaria
+  para sempre.
 - **500** — só para falha temporária que merece nova tentativa.
+- **401** — hoje só quando `MP_WEBHOOK_SECRET` não está configurada. Assinatura que não confere
+  não gera mais 401; ver a seção acima.
 
 ### Mudanças no banco
 
@@ -277,6 +347,13 @@ O que passou:
   vira a mensagem "Este CPF já está inscrito."); e uma nova tentativa **pendente** com o mesmo
   CPF é permitida — que é exatamente o comportamento pedido para Pix expirado.
 
+Depois disso, o sistema foi publicado na Vercel e **testado no site em produção**, onde o
+webhook foi finalmente confirmado de ponta a ponta: uma inscrição feita pelo formulário, com a
+aba fechada logo em seguida, foi confirmada sozinha com o peito atribuído — só o webhook poderia
+ter feito isso. O email, nesse teste, falhou pela limitação conhecida do Resend (o destinatário
+era um email de teste do Mercado Pago, e o Resend em modo de teste só entrega para o email da
+própria conta); a inscrição foi confirmada normalmente, como esperado do envio melhor-esforço.
+
 Todos os registros de teste foram apagados depois; a tabela ficou vazia.
 
 **Observação sobre o ambiente**: o navegador automatizado (Claude in Chrome) travou no meio da
@@ -286,20 +363,20 @@ principal (formulário → QR → confirmação) chegou a ser conferido visualme
 
 ### O que ainda falta para ir ao ar (depende do usuário)
 
-1. ~~Rodar a migração no Supabase~~ — **feito e verificado** (colunas, índices e a função
-   `confirmar_pagamento` respondendo).
-2. ~~Criar a aplicação no Mercado Pago e configurar `MP_ACCESS_TOKEN` / `MP_WEBHOOK_SECRET`~~ —
-   **feito** em `.env.local`, com credenciais de **teste**.
-3. **Resetar a sequência do peito antes do lançamento**, porque o teste consumiu o número 1:
+1. ~~Migração no Supabase~~ — feito e verificado.
+2. ~~Aplicação no Mercado Pago e credenciais~~ — feito, com credenciais de **teste**.
+3. ~~Configurar a URL do webhook~~ — feito; o usuário cadastrou nos modos produtivo e teste.
+4. ~~Publicar na Vercel~~ — feito, e testado no site em produção.
+5. **Resetar a sequência do peito antes do lançamento**, porque os testes consumiram o número 1:
    `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
-4. **Configurar as variáveis na Vercel** (`MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`) e publicar.
-5. **Cadastrar a URL do webhook** no painel do Mercado Pago:
-   `https://desafio-viva.vercel.app/api/webhooks/mercadopago`, tópico de **ordens**.
-6. **Trocar as credenciais de teste pelas de produção** quando a farmácia for realmente cobrar,
-   e cadastrar a chave Pix na conta que vai receber. Enquanto o token for de teste, os QR codes
-   gerados no site público **não são pagáveis de verdade**.
-7. Continua valendo: **verificar um domínio no Resend** antes de divulgar, senão só o email da
-   conta Resend recebe a confirmação.
+6. **Trocar as credenciais de teste pelas de produção** quando a farmácia for realmente cobrar, e
+   cadastrar a chave Pix na conta que vai receber. Enquanto o token for de teste, os QR codes do
+   site público **não são pagáveis de verdade** — não divulgar o endereço antes disso.
+7. **Verificar um domínio no Resend** antes de divulgar. Confirmado em produção que sem isso o
+   envio falha com `You can only send testing emails to your own email address` — a inscrição é
+   confirmada normalmente (o envio é melhor-esforço), mas o participante não recebe o email.
+8. Opcional: retomar a investigação da assinatura do webhook (ver a seção correspondente). Não é
+   bloqueante — o sistema funciona sem ela.
 
 ### Detalhe para avisar o usuário
 

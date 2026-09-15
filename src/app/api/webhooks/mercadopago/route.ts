@@ -137,11 +137,10 @@ export async function POST(request: NextRequest) {
       // diferenciar: nada aqui é segredo (a query é pública, o request-id é
       // um identificador de correlação e o `ts` é o carimbo da assinatura).
       const diagnostico = [
-        `Webhook do Mercado Pago rejeitado (${error.reason})`,
+        `Webhook do Mercado Pago com assinatura não conferida (${error.reason}) — seguindo com verificação na API`,
         `request-id=${error.requestId ?? "?"}`,
         `ts=${error.timestamp ?? "?"}`,
         `query=${request.nextUrl.search || "(vazia)"}`,
-        `candidatos=${JSON.stringify(candidatosDataId(request.nextUrl))}`,
       ];
 
       // Diagnóstico profundo, ligado sob demanda por MP_WEBHOOK_DEBUG=1.
