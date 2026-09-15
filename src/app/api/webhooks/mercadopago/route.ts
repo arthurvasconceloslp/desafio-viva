@@ -24,32 +24,56 @@ import { reconcileOrder } from "@/lib/pagamento";
 const ORDER_TOPICS = new Set(["order", "orders"]);
 
 /**
- * Valida a assinatura aceitando o `data.id` como veio E em minúsculas.
+ * Monta os valores de `data.id` que podem ter sido usados no manifesto
+ * assinado pelo Mercado Pago.
  *
- * Motivo: a documentação do Mercado Pago diz que o manifesto assinado usa o
- * `data.id` em minúsculas quando ele é alfanumérico, mas o
- * `WebhookSignatureValidator` do SDK usa o valor exatamente como recebido — e
- * os ids de ordem chegam em MAIÚSCULAS (`ORDTST01...`). Se as duas pontas
- * discordarem, todo webhook legítimo seria rejeitado como falso e nenhum
- * pagamento se confirmaria por esse caminho. Testar as duas grafias não
- * enfraquece nada: ambas continuam exigindo o HMAC correto feito com o
- * segredo, que só o Mercado Pago conhece.
+ * O manifesto é `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`, mas na
+ * prática há três incertezas sobre o `<data.id>`:
+ *  1. o nome do parâmetro na query — as notificações novas usam `data.id`,
+ *     mas o formato IPN antigo usa `id`;
+ *  2. a grafia — a documentação diz que o manifesto usa o id em minúsculas
+ *     quando ele é alfanumérico, e os ids de ordem chegam em MAIÚSCULAS
+ *     (`ORDTST01...`), mas o validador do SDK usa o valor como veio;
+ *  3. a ausência — quando o parâmetro não vem na URL, o trecho `id:` some
+ *     do manifesto.
  *
- * Só vale insistir quando a falha foi de HMAC — cabeçalho ausente, malformado
- * ou timestamp fora da tolerância (replay) não melhoram com outra grafia.
+ * Errar qualquer um deles faz TODO webhook legítimo ser rejeitado como falso,
+ * em silêncio. Por isso testamos os candidatos em vez de apostar em um.
+ * Isso não enfraquece a verificação: cada candidato continua exigindo o HMAC
+ * correto, feito com o segredo que só o Mercado Pago conhece — quem não tem o
+ * segredo não passa em nenhum deles.
+ */
+function candidatosDataId(url: URL): (string | null)[] {
+  const brutos = [
+    url.searchParams.get("data.id"),
+    url.searchParams.get("id"),
+  ].filter((v): v is string => Boolean(v));
+
+  const candidatos = new Set<string | null>();
+  for (const bruto of brutos) {
+    candidatos.add(bruto);
+    candidatos.add(bruto.toLowerCase());
+  }
+  // Último caso: manifesto sem o trecho `id:`.
+  candidatos.add(null);
+  return Array.from(candidatos);
+}
+
+/**
+ * Valida a assinatura contra todos os candidatos de `data.id`.
+ *
+ * Só insiste quando a falha foi de HMAC: cabeçalho ausente, malformado ou
+ * timestamp fora da tolerância (replay) não melhoram com outro candidato e
+ * são rejeitados de primeira.
  */
 function validarAssinatura(params: {
   secret: string;
   xSignature: string | null;
   xRequestId: string | null;
-  dataId: string | null;
+  candidatos: (string | null)[];
 }): void {
-  const grafias = params.dataId
-    ? Array.from(new Set([params.dataId, params.dataId.toLowerCase()]))
-    : [params.dataId];
-
   let ultimoErro: unknown;
-  for (const dataId of grafias) {
+  for (const dataId of params.candidatos) {
     try {
       WebhookSignatureValidator.validate({
         xSignature: params.xSignature,
@@ -84,19 +108,33 @@ export async function POST(request: NextRequest) {
   // Corpo bruto: a assinatura é verificada antes de qualquer parse, e nada
   // do conteúdo é usado enquanto a origem não estiver confirmada.
   const rawBody = await request.text();
-  const dataIdParam = request.nextUrl.searchParams.get("data.id");
+  const dataIdParam =
+    request.nextUrl.searchParams.get("data.id") ??
+    request.nextUrl.searchParams.get("id");
 
   try {
     validarAssinatura({
       secret,
       xSignature: request.headers.get("x-signature"),
       xRequestId: request.headers.get("x-request-id"),
-      dataId: dataIdParam,
+      candidatos: candidatosDataId(request.nextUrl),
     });
   } catch (error) {
     if (error instanceof InvalidWebhookSignatureError) {
+      // Diagnóstico: uma rejeição pode significar tanto uma tentativa de
+      // fraude quanto uma divergência de formato entre o que o Mercado Pago
+      // assina e o que reconstruímos — e as duas são indistinguíveis sem ver
+      // o formato real da requisição. Registramos só o que é necessário para
+      // diferenciar: nada aqui é segredo (a query é pública, o request-id é
+      // um identificador de correlação e o `ts` é o carimbo da assinatura).
       console.warn(
-        `Webhook do Mercado Pago rejeitado (${error.reason}), request-id=${error.requestId ?? "?"}`
+        [
+          `Webhook do Mercado Pago rejeitado (${error.reason})`,
+          `request-id=${error.requestId ?? "?"}`,
+          `ts=${error.timestamp ?? "?"}`,
+          `query=${request.nextUrl.search || "(vazia)"}`,
+          `candidatos=${JSON.stringify(candidatosDataId(request.nextUrl))}`,
+        ].join(" | ")
       );
       return NextResponse.json(
         { error: "Assinatura inválida." },
