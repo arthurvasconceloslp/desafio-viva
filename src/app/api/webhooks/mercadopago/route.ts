@@ -5,14 +5,20 @@ import {
   SignatureFailureReason,
   MPNotFoundError,
 } from "mercadopago";
-import { reconcileOrder } from "@/lib/pagamento";
+import { reconcileOrder, situacaoDaOrdem } from "@/lib/pagamento";
 
 /**
- * Webhook do Mercado Pago — a única fonte confiável de "o Pix foi pago".
+ * Webhook do Mercado Pago — o aviso de que uma ordem mudou.
  *
- * Nunca confiamos no corpo da notificação para decidir que algo foi pago:
- * ela só diz QUAL ordem mudou. Quem diz o que aconteceu é a consulta feita
- * depois, direto na API do Mercado Pago, dentro de `reconcileOrder`.
+ * A regra que sustenta a segurança deste handler é uma só: **o conteúdo da
+ * notificação nunca decide nada**. Ela só diz QUAL ordem mudou; o que
+ * aconteceu vem de uma consulta nossa à API do Mercado Pago, autenticada com
+ * o nosso token, dentro de `reconcileOrder`. É por isso que uma notificação
+ * forjada não consegue confirmar uma inscrição que ninguém pagou.
+ *
+ * A assinatura é verificada, mas não é o que impede fraude — ver o bloco
+ * "Por que seguimos mesmo sem assinatura válida", no meio do handler, para a
+ * história completa e para o filtro que protege o endpoint contra abuso.
  *
  * Códigos de resposta importam: o Mercado Pago reenvia a notificação a cada
  * 15 minutos até receber 200/201. Por isso devolvemos 200 também para
@@ -105,12 +111,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Corpo bruto: a assinatura é verificada antes de qualquer parse, e nada
-  // do conteúdo é usado enquanto a origem não estiver confirmada.
+  // Corpo bruto, lido antes de qualquer parse: a verificação de assinatura
+  // precisa dos bytes exatamente como chegaram.
   const rawBody = await request.text();
   const dataIdParam =
     request.nextUrl.searchParams.get("data.id") ??
     request.nextUrl.searchParams.get("id");
+
+  let assinado = true;
 
   try {
     validarAssinatura({
@@ -121,6 +129,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof InvalidWebhookSignatureError) {
+      assinado = false;
       // Diagnóstico: uma rejeição pode significar tanto uma tentativa de
       // fraude quanto uma divergência de formato entre o que o Mercado Pago
       // assina e o que reconstruímos — e as duas são indistinguíveis sem ver
@@ -151,12 +160,13 @@ export async function POST(request: NextRequest) {
       }
 
       console.warn(diagnostico.join(" | "));
-      return NextResponse.json(
-        { error: "Assinatura inválida." },
-        { status: 401 }
-      );
+      // NÃO devolvemos 401 aqui. Ver "Por que seguimos sem assinatura"
+      // logo abaixo — a notificação continua valendo apenas como um aviso
+      // de "vá conferir esta ordem", e o filtro que protege o endpoint é a
+      // existência da ordem no nosso banco, verificada adiante.
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   let event: { type?: string; topic?: string; data?: { id?: string | number } };
@@ -176,6 +186,41 @@ export async function POST(request: NextRequest) {
   const orderId = String(event.data?.id ?? dataIdParam ?? "").trim();
   if (!orderId) {
     return NextResponse.json({ ok: true, ignored: "sem id" });
+  }
+
+  // ---------------------------------------------------------------------
+  // Por que seguimos mesmo sem assinatura válida
+  //
+  // As notificações reais do Mercado Pago chegam com uma assinatura que não
+  // fecha com nenhum segredo configurado no painel, mesmo depois de
+  // regenerá-lo e de testar exaustivamente os formatos documentados de
+  // manifesto. Exigir assinatura, na prática, desligaria o webhook.
+  //
+  // Seguir é seguro porque este handler NUNCA acreditou no conteúdo da
+  // notificação: ela só diz QUAL ordem mudou, e o que aconteceu vem de uma
+  // consulta nossa à API do Mercado Pago, autenticada com o nosso token.
+  // Uma notificação forjada, portanto, não consegue confirmar uma inscrição
+  // que não foi paga — no máximo nos faz reconsultar uma ordem.
+  //
+  // O que sobra é o risco de abuso (alguém nos fazer gastar consultas à
+  // toa), e é contra isso que serve o filtro abaixo: sem assinatura válida,
+  // a ordem precisa existir no nosso banco. O id é uma string opaca que só
+  // existe aqui e na tela de quem se inscreveu.
+  // ---------------------------------------------------------------------
+  if (!assinado) {
+    const situacao = await situacaoDaOrdem(orderId);
+
+    if (situacao === null) {
+      console.warn(
+        `Webhook sem assinatura válida citando ordem desconhecida (${orderId}) — ignorado.`
+      );
+      return NextResponse.json({ ok: true, ignored: "ordem desconhecida" });
+    }
+
+    if (situacao === "pago") {
+      // Já confirmada: nada a fazer, e sem gastar consulta.
+      return NextResponse.json({ ok: true, status: "pago" });
+    }
   }
 
   try {

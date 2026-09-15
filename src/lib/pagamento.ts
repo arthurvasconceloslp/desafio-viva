@@ -27,6 +27,28 @@ type ConfirmacaoRow = {
 };
 
 /**
+ * Descobre se uma ordem do Mercado Pago corresponde a alguma inscrição nossa,
+ * e em que situação ela está. Devolve `null` quando a ordem é desconhecida.
+ *
+ * Serve de filtro para notificações cuja assinatura não pôde ser verificada:
+ * sem conhecer um id de ordem real (uma string opaca que só existe no nosso
+ * banco e na tela de quem se inscreveu), ninguém consegue nos fazer gastar
+ * uma consulta à API do Mercado Pago.
+ */
+export async function situacaoDaOrdem(
+  orderId: string
+): Promise<PaymentStatus | null> {
+  const supabase = getSupabaseAdmin();
+  const { data } = await supabase
+    .from("inscricoes")
+    .select("payment_status")
+    .eq("mp_order_id", orderId)
+    .maybeSingle();
+
+  return (data?.payment_status as PaymentStatus | undefined) ?? null;
+}
+
+/**
  * Varre as inscrições ainda pendentes e pergunta ao Mercado Pago o que
  * aconteceu com cada uma.
  *
