@@ -127,15 +127,30 @@ export async function POST(request: NextRequest) {
       // o formato real da requisição. Registramos só o que é necessário para
       // diferenciar: nada aqui é segredo (a query é pública, o request-id é
       // um identificador de correlação e o `ts` é o carimbo da assinatura).
-      console.warn(
-        [
-          `Webhook do Mercado Pago rejeitado (${error.reason})`,
-          `request-id=${error.requestId ?? "?"}`,
-          `ts=${error.timestamp ?? "?"}`,
-          `query=${request.nextUrl.search || "(vazia)"}`,
-          `candidatos=${JSON.stringify(candidatosDataId(request.nextUrl))}`,
-        ].join(" | ")
-      );
+      const diagnostico = [
+        `Webhook do Mercado Pago rejeitado (${error.reason})`,
+        `request-id=${error.requestId ?? "?"}`,
+        `ts=${error.timestamp ?? "?"}`,
+        `query=${request.nextUrl.search || "(vazia)"}`,
+        `candidatos=${JSON.stringify(candidatosDataId(request.nextUrl))}`,
+      ];
+
+      // Diagnóstico profundo, ligado sob demanda por MP_WEBHOOK_DEBUG=1.
+      // Registra a assinatura recebida para permitir descobrir offline, com
+      // o segredo em mãos, qual manifesto o Mercado Pago usou — ou concluir
+      // que o segredo configurado é de outra aplicação/ambiente. O valor `v1`
+      // é a SAÍDA de um HMAC sobre dados públicos: não revela o segredo, e
+      // não serve para forjar outra notificação, porque cada uma tem seu
+      // próprio `ts` e a janela de tolerância é de 5 minutos. Ainda assim
+      // fica desligado por padrão, para não poluir o log de produção.
+      if (process.env.MP_WEBHOOK_DEBUG === "1") {
+        diagnostico.push(
+          `x-signature=${request.headers.get("x-signature") ?? "(ausente)"}`,
+          `corpo=${rawBody.slice(0, 300)}`
+        );
+      }
+
+      console.warn(diagnostico.join(" | "));
       return NextResponse.json(
         { error: "Assinatura inválida." },
         { status: 401 }
