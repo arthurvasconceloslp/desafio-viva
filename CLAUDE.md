@@ -6,7 +6,7 @@ Sistema web de inscrição para a corrida de comemoração de aniversário da fa
 
 Implementação completa do código: todas as páginas, formulário de inscrição com Server Action + validação (zod, incluindo checagem de dígito verificador de CPF), painel admin com login por senha única (sessão via cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, substituiu `middleware.ts`). `npm run build` e `npm run lint` passam sem erros.
 
-**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Publicado na Vercel e testado no site em produção**, ainda com credenciais de teste do Mercado Pago.
+**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Publicado na Vercel e rodando com credenciais de PRODUÇÃO do Mercado Pago** — o site cobra dinheiro de verdade.
 
 Testado de ponta a ponta no navegador de verdade (Claude in Chrome) com Supabase propositalmente desconectado: home, formulário de inscrição (erro de validação por campo, banner geral de erro, fallback "banco não conectado"), login admin (senha errada, senha certa, dashboard, logout, proteção de rota pós-logout). Dois bugs reais de UX foram encontrados e corrigidos durante esse teste:
 1. O React 19 reseta o `<form action={...}>` nativamente após toda submissão de Server Action. Como os inputs eram não-controlados, qualquer erro de validação apagava tudo que o usuário tinha digitado. Corrigido tornando os campos de `InscricaoForm` controlados (`useState` + `value`/`onChange`).
@@ -363,20 +363,59 @@ principal (formulário → QR → confirmação) chegou a ser conferido visualme
 
 ### O que ainda falta para ir ao ar (depende do usuário)
 
-1. ~~Migração no Supabase~~ — feito e verificado.
-2. ~~Aplicação no Mercado Pago e credenciais~~ — feito, com credenciais de **teste**.
-3. ~~Configurar a URL do webhook~~ — feito; o usuário cadastrou nos modos produtivo e teste.
-4. ~~Publicar na Vercel~~ — feito, e testado no site em produção.
-5. **Resetar a sequência do peito antes do lançamento**, porque os testes consumiram o número 1:
+1. ~~Migração no Supabase~~, ~~credenciais~~, ~~webhook~~, ~~publicar~~ — feitos.
+2. ~~Trocar para credenciais de produção~~ — feito em 15/09/2026.
+3. **Resetar a sequência do peito antes de divulgar**, porque os testes consumiram números:
    `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
-6. **Trocar as credenciais de teste pelas de produção** quando a farmácia for realmente cobrar, e
-   cadastrar a chave Pix na conta que vai receber. Enquanto o token for de teste, os QR codes do
-   site público **não são pagáveis de verdade** — não divulgar o endereço antes disso.
-7. **Verificar um domínio no Resend** antes de divulgar. Confirmado em produção que sem isso o
-   envio falha com `You can only send testing emails to your own email address` — a inscrição é
-   confirmada normalmente (o envio é melhor-esforço), mas o participante não recebe o email.
-8. Opcional: retomar a investigação da assinatura do webhook (ver a seção correspondente). Não é
-   bloqueante — o sistema funciona sem ela.
+4. **Cadastrar a URL do webhook na aplicação de produção** (ver "Conta de produção" abaixo):
+   `https://desafio-viva.vercel.app/api/webhooks/mercadopago`, tópico de **ordens**.
+5. **Verificar um domínio no Resend** quando quiser voltar a enviar email de confirmação. Por ora
+   o usuário optou por avisar manualmente, e a página `/consulta` cobre a lacuna.
+6. Opcional: retomar a investigação da assinatura do webhook. Não é bloqueante.
+
+### Conta de produção (dinheiro de verdade)
+
+Desde 15/09/2026 o site usa o Access Token de **produção** da conta Mercado Pago de
+**João Arthur Lopes Vasconcelos** (conta pessoal brasileira, id 3515760829, aplicação
+`5474218114318934`). Verificado antes de publicar: a conta não tem a marca `test_user` e o Pix
+está `active` nela — o que derrubou de vez o risco antigo de a categoria do negócio bloquear Pix.
+
+**O dinheiro cai na conta pessoal do usuário, não em uma conta da farmácia.** Isso foi apontado
+a ele e foi uma escolha consciente. Se um dia for preciso mudar para uma conta com CNPJ, o
+momento certo é *antes* de haver inscritos pagantes — depois, os pagamentos ficam espalhados
+entre duas contas.
+
+**Pendência conhecida**: a aplicação de produção (`5474218114318934`) é diferente da usada nos
+testes (`2443225058617655`), e **a configuração de webhook vive dentro da aplicação**. Enquanto a
+URL não for cadastrada na aplicação nova, o Mercado Pago não notifica o site. Isso não impede
+ninguém de se inscrever — a tela de espera confirma em 6 segundos, e há o botão no admin e o cron
+diário —, mas quem fechar a aba só é confirmado por esses caminhos mais lentos. A `MP_WEBHOOK_SECRET`
+configurada ainda é a da aplicação antiga; como a validação de assinatura já não é bloqueante
+(ver a seção da assinatura), isso não quebra nada, mas vale atualizar quando a nova for criada.
+
+### Página "Meu número" (`/consulta`)
+
+Criada porque o usuário decidiu **deixar o email (Resend) para depois**. Sem email, quem pagasse e
+fechasse a aba não teria como descobrir o próprio número de peito: a tela de confirmação só abre
+com o link que estava na aba fechada.
+
+A consulta pede **CPF e data de nascimento**, não só CPF. Com só o CPF, qualquer pessoa poderia
+descobrir quem está inscrito testando números — e CPF é um dado que circula. A resposta é
+deliberadamente magra (primeiro nome, número de peito e situação), sem email, telefone ou CPF
+completo, para que a página não vire uma forma de extrair dados pessoais. Quando os dados não
+batem, a mensagem é a mesma para "não existe" e "data não confere", para não entregar que aquele
+CPF está inscrito.
+
+Quando a inscrição está pendente, a página devolve o link da tela de pagamento — o que também
+resolve o caso de alguém ter perdido o QR code.
+
+### ⚠️ Armadilha: `"use server"` só exporta funções async
+
+A primeira versão de `src/app/consulta/actions.ts` exportava uma constante
+(`export const consultaInicial`) junto com a Server Action. **O build passou sem reclamar**, mas
+em tempo de execução a página quebrava com "A server error occurred" ao submeter o formulário.
+Um arquivo com `"use server"` só pode exportar funções async. A constante foi movida para o
+componente cliente. Vale lembrar disso: o erro não aparece em `npm run build` nem no lint.
 
 ### Detalhe para avisar o usuário
 
@@ -454,10 +493,12 @@ A unicidade de CPF é um **índice parcial** (`inscricoes_cpf_pago_key`), válid
    regressiva e verificação automática do pagamento.
 4. **Confirmação de inscrição** (`/inscricao/confirmacao?token=...`) — mostra o número de peito,
    buscado no banco depois do pagamento confirmado.
-5. **Percurso** (`/percurso`) — aba com aviso "em breve", a ser substituída futuramente por mapa
+5. **Consultar inscrição** (`/consulta`) — o participante informa CPF e data de nascimento e vê
+   seu número de peito, ou o link para retomar um pagamento pendente.
+6. **Percurso** (`/percurso`) — aba com aviso "em breve", a ser substituída futuramente por mapa
    real (Strava/Google Maps embed ou GPX renderizado).
-6. **Painel admin** (`/admin`) — login por senha única, lista de inscritos com situação de
-   pagamento e número de peito, exportação CSV.
+7. **Painel admin** (`/admin`) — login por senha única, lista de inscritos com situação de
+   pagamento e número de peito, botão "Verificar pagamentos" e exportação CSV.
 
 Rotas de API: `/api/inscricao/status` (consulta de status pela tela de espera),
 `/api/webhooks/mercadopago` (notificação de pagamento), `/api/admin/export` (CSV).

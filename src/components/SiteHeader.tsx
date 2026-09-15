@@ -6,6 +6,7 @@ const NAV_LINKS = [
   { href: "/", label: "Evento" },
   { href: "/percurso", label: "Percurso" },
   { href: "/inscricao", label: "Inscrição" },
+  { href: "/consulta", label: "Meu número" },
 ];
 
 export function SiteHeader() {

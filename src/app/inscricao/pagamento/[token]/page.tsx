@@ -122,8 +122,12 @@ export default async function PagamentoPage(
       />
 
       <p className="mt-8 text-center text-sm text-gray-500">
-        Pode deixar esta página aberta. Se fechar, a confirmação chega do mesmo
-        jeito por email assim que o pagamento for processado.
+        Pode deixar esta página aberta. Se fechar antes de terminar, consulte
+        seu número depois em{" "}
+        <Link href="/consulta" className="font-semibold text-brand underline">
+          Meu número
+        </Link>
+        , informando CPF e data de nascimento.
       </p>
     </div>
   );
