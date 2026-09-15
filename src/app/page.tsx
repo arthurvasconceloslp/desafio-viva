@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { EVENT } from "@/lib/config";
+import { EVENT, PAYMENT, formatBRL } from "@/lib/config";
 
 export default function HomePage() {
   return (
@@ -23,7 +23,7 @@ export default function HomePage() {
             href="/inscricao"
             className="rounded-full bg-brand px-8 py-3 text-base font-semibold text-white shadow-sm transition-colors hover:bg-brand-dark"
           >
-            Inscreva-se gratuitamente
+            Inscreva-se agora
           </Link>
         </div>
       </section>
@@ -31,7 +31,10 @@ export default function HomePage() {
       <section className="mx-auto grid max-w-5xl gap-6 px-4 py-12 sm:grid-cols-3 sm:px-6">
         <InfoCard label="Data" value={EVENT.dateLabel} />
         <InfoCard label="Local" value={EVENT.locationLabel} />
-        <InfoCard label="Inscrição" value="Gratuita, vagas ilimitadas" />
+        <InfoCard
+          label="Inscrição"
+          value={`${formatBRL(PAYMENT.feeAmountCents)} via Pix, vagas ilimitadas`}
+        />
       </section>
 
       <section className="mx-auto max-w-3xl px-4 py-8 sm:px-6">

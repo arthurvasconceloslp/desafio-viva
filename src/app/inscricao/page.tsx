@@ -1,4 +1,5 @@
 import { InscricaoForm } from "./InscricaoForm";
+import { PAYMENT, formatBRL } from "@/lib/config";
 
 export default function InscricaoPage() {
   return (
@@ -7,8 +8,12 @@ export default function InscricaoPage() {
         Inscrição
       </h1>
       <p className="mt-2 text-gray-600">
-        Preencha seus dados abaixo. A inscrição é gratuita e seu número de
-        peito é gerado assim que você confirmar.
+        Preencha seus dados abaixo. A taxa de inscrição é de{" "}
+        <strong className="font-semibold text-gray-900">
+          {formatBRL(PAYMENT.feeAmountCents)}
+        </strong>
+        , paga por Pix na próxima tela. Seu número de peito é gerado assim que
+        o pagamento cair.
       </p>
       <div className="mt-8">
         <InscricaoForm />

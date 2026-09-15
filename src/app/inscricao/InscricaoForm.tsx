@@ -38,7 +38,7 @@ function SubmitButton() {
       disabled={pending}
       className="w-full rounded-full bg-brand px-6 py-3 font-semibold text-white transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {pending ? "Enviando..." : "Confirmar inscrição"}
+      {pending ? "Gerando o Pix..." : "Ir para o pagamento"}
     </button>
   );
 }

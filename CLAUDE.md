@@ -4,7 +4,9 @@ Sistema web de inscrição para a corrida de comemoração de aniversário da fa
 
 ## Status atual
 
-Implementação completa do código: todas as 5 páginas, formulário de inscrição com Server Action + validação (zod, incluindo checagem de dígito verificador de CPF), painel admin com login por senha única (sessão via cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, substituiu `middleware.ts`). `npm run build` e `npm run lint` passam sem erros.
+Implementação completa do código: todas as páginas, formulário de inscrição com Server Action + validação (zod, incluindo checagem de dígito verificador de CPF), painel admin com login por senha única (sessão via cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, substituiu `middleware.ts`). `npm run build` e `npm run lint` passam sem erros.
+
+**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Ainda não foi publicado na Vercel.**
 
 Testado de ponta a ponta no navegador de verdade (Claude in Chrome) com Supabase propositalmente desconectado: home, formulário de inscrição (erro de validação por campo, banner geral de erro, fallback "banco não conectado"), login admin (senha errada, senha certa, dashboard, logout, proteção de rota pós-logout). Dois bugs reais de UX foram encontrados e corrigidos durante esse teste:
 1. O React 19 reseta o `<form action={...}>` nativamente após toda submissão de Server Action. Como os inputs eram não-controlados, qualquer erro de validação apagava tudo que o usuário tinha digitado. Corrigido tornando os campos de `InscricaoForm` controlados (`useState` + `value`/`onChange`).
@@ -75,13 +77,244 @@ O usuário confirmou que a farmácia **não tem domínio próprio ainda**. Verif
 
 **WhatsApp como alternativa foi considerado e descartado** (perguntado pelo usuário). Diferente do email, WhatsApp não depende de domínio, mas exige verificação de empresa na Meta e cobra por mensagem via API oficial (Twilio/Zenvia/Meta Cloud API) além de uma cota gratuita limitada — mais caro e mais burocrático que o email para uma corrida pequena e gratuita. Alternativas não-oficiais (automatizar um número pessoal) foram descartadas por violarem os termos do WhatsApp e arriscarem banir o número. Decisão: manter só email.
 
+## Pagamento da taxa de inscrição via Pix (Mercado Pago) — IMPLEMENTADO
+
+**Valor da taxa: R$ 20,00** (`PAYMENT.feeAmountCents = 2000` em `src/lib/config.ts`), definido pelo usuário.
+
+### Por que Mercado Pago e não Stripe
+
+A especificação anterior desta seção mandava usar **Stripe via Vercel Marketplace**. Isso foi
+**descartado pelo usuário** depois de uma conversa em que ficou claro que ele não conhecia o
+conceito de gateway de pagamento: ele perguntou se a conta bancária da farmácia e a conta dele
+no Nubank "serviam" como conta Stripe. Depois de explicado que o gateway é uma camada separada
+do banco (o banco é só onde o dinheiro cai no fim), ele escolheu **Mercado Pago** — é brasileiro,
+o cadastro é mais simples (aceita CPF, não exige só CNPJ), e ele já conhece.
+
+Consequência prática: o Mercado Pago **não está no Vercel Marketplace** (`vercel integration
+discover --category payments` só retorna Stripe), então as credenciais são gerenciadas à mão em
+`.env.local` e no dashboard da Vercel, sem injeção automática.
+
+**Se um dia for necessário reconsiderar o Stripe** (ex.: Mercado Pago recusar a conta), a
+especificação original está no histórico do git — foi removida daqui para não confundir quem ler
+este arquivo achando que ainda é o plano.
+
+### Como funciona (Checkout Transparente, Orders API)
+
+Escolhido o **Checkout Transparente** em vez do checkout hospedado: o Mercado Pago devolve o QR
+code e o código copia-e-cola, e o site mostra isso numa página própria
+(`/inscricao/pagamento/[token]`), sem jogar o participante para fora do site.
+
+O contrato da API foi confirmado lendo os **tipos do SDK oficial `mercadopago@3.6.1`** instalado
+em `node_modules` (não de memória nem de blog): `POST /v1/orders` com
+`transactions.payments[0].payment_method = { id: "pix", type: "bank_transfer" }`; o QR volta em
+`transactions.payments[0].payment_method.qr_code` / `.qr_code_base64`.
+
+Fluxo completo:
+1. `/inscricao` — formulário igual ao de antes (mesmos campos, mesma validação, mesmo honeypot);
+   só mudou o texto, que agora avisa o valor e que o pagamento é na tela seguinte.
+2. `createInscricao` (`src/app/inscricao/actions.ts`) verifica se o CPF já tem inscrição **paga**,
+   insere a linha como `payment_status = 'pendente'` e **sem** número de peito, cria a cobrança Pix
+   no Mercado Pago (`src/lib/mercadopago.ts`), grava o QR code na linha e redireciona para
+   `/inscricao/pagamento/<public_token>`.
+3. A tela de pagamento mostra QR code, botão de copiar, contagem regressiva até o vencimento e um
+   componente cliente que consulta `/api/inscricao/status` a cada 6 segundos.
+4. Quando o pagamento entra, a inscrição é confirmada, o número de peito é atribuído e o email de
+   confirmação é enviado — tudo por `src/lib/pagamento.ts`, que é o **único** lugar do sistema que
+   faz isso. O envio do email saiu da Server Action (era lá antes), porque agora é o pagamento que
+   confirma a inscrição, não o envio do formulário.
+5. `/inscricao/confirmacao?token=...` busca o número **no banco** (nunca na URL) e mostra o peito.
+   Se ainda não estiver pago, redireciona de volta para a tela de pagamento.
+
+### Dois caminhos de confirmação (de propósito)
+
+O pagamento por Pix é assíncrono, então quem avisa que o dinheiro entrou **não pode ser o
+navegador do participante**. Existem dois caminhos, e ambos passam pela mesma função idempotente:
+
+- **Webhook** (`src/app/api/webhooks/mercadopago/route.ts`) — o caminho confiável, e o único que
+  funciona para quem fechou a aba.
+- **Consulta da própria tela de espera** (`/api/inscricao/status`) — consulta o Mercado Pago a cada
+  poll enquanto a inscrição está pendente. Faz a confirmação aparecer na hora para quem está
+  olhando a tela **e** serve de rede de segurança se o webhook estiver mal configurado (risco real
+  numa primeira integração).
+
+O webhook **nunca** confia no corpo da notificação para decidir que algo foi pago: a notificação só
+diz *qual ordem mudou*; o que aconteceu vem de uma consulta à API do Mercado Pago logo depois.
+
+### Idempotência — onde ela realmente mora
+
+A garantia de "não queimar dois números de peito para a mesma pessoa" **não está no TypeScript**, e
+sim na função Postgres `confirmar_pagamento` (em `supabase/schema.sql`): ela faz
+`SELECT ... FOR UPDATE` na linha e só chama `nextval('numero_peito_seq')` se a inscrição ainda não
+estiver paga. Devolve `ja_estava_pago` para o chamador saber que não deve reenviar o email.
+
+Isso é essencial porque o Mercado Pago reenvia a notificação a cada 15 minutos até receber 200, e os
+dois caminhos acima podem chegar ao mesmo tempo. Fazer "consulta + update" em duas etapas no
+servidor abriria uma janela de corrida.
+
+Além disso, a criação da cobrança usa `idempotencyKey: inscricao-<id>`, então um duplo clique ou
+retry da Server Action devolve a **mesma** ordem em vez de gerar uma segunda cobrança.
+
+### ⚠️ Armadilha real: os status da Orders API não são os da API antiga
+
+A primeira versão do `mapOrderToStatus` (`src/lib/mercadopago.ts`) tratava "pago" como
+`approved` e "recusado" como `rejected` — os valores da **antiga API de pagamentos**, que é o
+que aparece na maioria dos tutoriais e no conhecimento prévio do modelo. **A Orders API usa
+outro conjunto**, e o erro não gerava falha de build, de lint nem de tipo: simplesmente
+nenhum pagamento seria confirmado, para sempre, em silêncio. Pior ainda, o código chegava a
+mapear explicitamente `processed` (que é o status de **pago**) para `pendente`.
+
+Descoberto testando de verdade contra a API com a conta de teste. Valores confirmados na
+prática e na [tabela oficial](https://www.mercadopago.com.br/developers/en/docs/checkout-api-orders/payment-management/status/order-status):
+
+| Situação | `status` | `status_detail` |
+|---|---|---|
+| Pix recém-criado, esperando pagamento | `action_required` | `waiting_transfer` |
+| **Pago** | `processed` | `accredited` |
+| Pago com parte devolvida | `processed` | `partially_refunded` |
+| Expirou sem pagar | `expired` | `expired` |
+| Recusado | `failed` | (vários) |
+| Cancelado | `canceled` | `canceled` (um "l" só) |
+
+Há um teste de mesa das oito traduções possíveis descrito abaixo, em "Como testar sem dinheiro
+real". **Lição**: ao integrar uma API de pagamento, nunca confiar nos nomes de status de
+memória — conferir na tabela oficial E provocar o estado de verdade contra a API de teste,
+porque esse tipo de erro não aparece em nenhuma verificação estática.
+
+### Como testar sem dinheiro real
+
+A conta configurada é um **usuário de teste** do Mercado Pago (tag `test_user`, Brasil/MLB) —
+o Access Token começa com `APP_USR-`, o que parece credencial de produção mas não é; dá para
+confirmar com `GET https://api.mercadopago.com/users/me`, que mostra as tags da conta.
+
+Truque essencial: **`payer.first_name = "APRO"`** faz o Pix de teste ser aprovado
+automaticamente em poucos segundos, sem precisar pagar nada. Foi assim que os status acima
+foram confirmados.
+
+### ⚠️ Armadilha real: maiúsculas no `data.id` do webhook
+
+A documentação do Mercado Pago diz que o manifesto assinado usa o `data.id` **em minúsculas**
+quando ele é alfanumérico, mas o `WebhookSignatureValidator` do SDK oficial usa o valor
+exatamente como recebido — e os ids de ordem chegam em MAIÚSCULAS (`ORDTST01...`). Se as duas
+pontas discordarem, **todo webhook legítimo seria rejeitado como falso** (401) e nenhum
+pagamento se confirmaria por esse caminho — de novo, em silêncio.
+
+Confirmado em teste: assinando com o id em minúsculas, a validação do SDK falhava com 401.
+Como não dá para saber com certeza qual grafia o Mercado Pago usa em produção sem receber um
+webhook real dele, `validarAssinatura` (no route handler) agora tenta **as duas grafias** e só
+rejeita se nenhuma bater. Isso não enfraquece a proteção: as duas continuam exigindo o HMAC
+correto, feito com o segredo que só o Mercado Pago conhece. A insistência só acontece quando a
+falha foi de HMAC — cabeçalho ausente/malformado e timestamp fora da tolerância (replay)
+continuam sendo rejeitados de primeira.
+
+**Quando o primeiro pagamento real acontecer, conferir no log se o webhook foi aceito.** Se
+aparecer `Webhook do Mercado Pago rejeitado (SignatureMismatch)`, o problema é outro e vale
+investigar — mas o participante ainda assim é confirmado pela tela de espera.
+
+### Códigos de resposta do webhook (importam)
+
+- **401** — assinatura inválida (`WebhookSignatureValidator` do SDK, com `toleranceSeconds: 300`
+  contra replay).
+- **200** — inclusive para eventos que decidimos ignorar (tópico que não é de ordem, ordem
+  desconhecida). Se devolvêssemos erro, o Mercado Pago reenviaria para sempre.
+- **500** — só para falha temporária que merece nova tentativa.
+
+### Mudanças no banco
+
+`supabase/schema.sql` foi reescrito, e há uma migração para o banco que já existe:
+**`supabase/migrations/001_pagamento_pix.sql`** — rodar **uma vez** no SQL Editor do Supabase.
+
+Colunas novas: `public_token` (uuid), `payment_status`, `numero_peito`, `valor_centavos`,
+`mp_order_id`, `mp_payment_id`, `mp_qr_code`, `mp_qr_code_base64`, `mp_ticket_url`,
+`pix_expira_em`, `pago_em`, `email_enviado_em`.
+
+Duas decisões que valem entender:
+- **`public_token` em vez do `id` nas URLs**: com `id` sequencial, trocar o número na URL mostraria
+  a inscrição de outra pessoa. O token é um UUID aleatório.
+- **CPF único só entre pagos**: `inscricoes_cpf_key` (unique simples) virou o índice parcial
+  `inscricoes_cpf_pago_key ... where payment_status = 'pago'`. Assim um Pix expirado libera o CPF
+  para nova tentativa — decisão confirmada com o usuário — sem precisar de rotina de limpeza.
+
+O `id` da tabela **não é mais o número de peito**: ele agora tem buracos (tentativas que nunca
+pagaram). O peito vem da sequência `numero_peito_seq`.
+
+### Variáveis de ambiente novas
+
+- `MP_ACCESS_TOKEN` — Access Token da aplicação no Mercado Pago (só servidor, nunca no cliente).
+- `MP_WEBHOOK_SECRET` — "assinatura secreta" do webhook, usada para provar que a notificação veio
+  mesmo do Mercado Pago.
+- `SITE_URL` — opcional. Em produção a Vercel já injeta `VERCEL_PROJECT_PRODUCTION_URL`, que
+  `src/lib/site-url.ts` usa como fallback. Definir só quando houver domínio próprio, ou para testar
+  localmente com túnel.
+
+### Testado de ponta a ponta (15/09/2026)
+
+Feito com a conta de **teste** do Mercado Pago (tag `test_user`, Brasil/MLB — o Access Token
+começa com `APP_USR-`, o que parece produção mas não é; dá para confirmar com
+`GET https://api.mercadopago.com/users/me`) e contra o Supabase de verdade, com o servidor de
+produção local (`npm run build && npm run start`), não só o `next dev`.
+
+Truque essencial para testar: **`payer.first_name = "APRO"`** faz o Pix de teste ser aprovado
+automaticamente em segundos. Como a Server Action usa o primeiro nome do participante como
+`first_name`, basta se inscrever com o nome "APRO Silva" pelo formulário normal.
+
+O que passou:
+- Formulário → cobrança criada → QR code renderizado na página, com o `public_token` na URL
+  (não o id sequencial), valor R$ 20,00 e contagem regressiva.
+- Confirmação automática: a tela de espera detectou o pagamento sozinha e redirecionou para a
+  confirmação com o **peito nº 1**. Email de confirmação realmente entregue pelo Resend
+  (`email_enviado_em` preenchido no banco).
+- Webhook, seis casos: assinatura falsa → 401; assinatura válida com id maiúsculo → 200;
+  assinatura válida com id minúsculo → 200 (depois do endurecimento acima); replay com
+  timestamp de 1 hora atrás → 401; tópico `payment` → 200 ignorado; reenvio duplicado → 200.
+- **Idempotência comprovada**: após 4 entregas de webhook bem-sucedidas para a mesma ordem, o
+  `numero_peito` continuou 1 e o `email_enviado_em` continuou com o mesmo horário — nenhum
+  número queimado a mais, nenhum email repetido.
+- Admin: `/admin/dashboard` sem sessão → 307; `/api/admin/export` sem sessão → 401; com sessão,
+  painel mostra "Pago", nome, CPF e total arrecadado; CSV sai com as colunas novas
+  (peito, situação, valor com vírgula decimal, pago em).
+- CPF duplicado, nas três camadas: a consulta da Server Action acha a inscrição paga e bloqueia;
+  o índice único parcial rejeita um segundo registro **pago** com o mesmo CPF (erro 23505, que
+  vira a mensagem "Este CPF já está inscrito."); e uma nova tentativa **pendente** com o mesmo
+  CPF é permitida — que é exatamente o comportamento pedido para Pix expirado.
+
+Todos os registros de teste foram apagados depois; a tabela ficou vazia.
+
+**Observação sobre o ambiente**: o navegador automatizado (Claude in Chrome) travou no meio da
+sessão e parou de navegar; as verificações restantes foram feitas por HTTP direto contra as
+mesmas rotas, gerando o cookie de sessão do admin pelo mesmo HMAC que o código usa. O fluxo
+principal (formulário → QR → confirmação) chegou a ser conferido visualmente antes disso.
+
+### O que ainda falta para ir ao ar (depende do usuário)
+
+1. ~~Rodar a migração no Supabase~~ — **feito e verificado** (colunas, índices e a função
+   `confirmar_pagamento` respondendo).
+2. ~~Criar a aplicação no Mercado Pago e configurar `MP_ACCESS_TOKEN` / `MP_WEBHOOK_SECRET`~~ —
+   **feito** em `.env.local`, com credenciais de **teste**.
+3. **Resetar a sequência do peito antes do lançamento**, porque o teste consumiu o número 1:
+   `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
+4. **Configurar as variáveis na Vercel** (`MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`) e publicar.
+5. **Cadastrar a URL do webhook** no painel do Mercado Pago:
+   `https://desafio-viva.vercel.app/api/webhooks/mercadopago`, tópico de **ordens**.
+6. **Trocar as credenciais de teste pelas de produção** quando a farmácia for realmente cobrar,
+   e cadastrar a chave Pix na conta que vai receber. Enquanto o token for de teste, os QR codes
+   gerados no site público **não são pagáveis de verdade**.
+7. Continua valendo: **verificar um domínio no Resend** antes de divulgar, senão só o email da
+   conta Resend recebe a confirmação.
+
+### Detalhe para avisar o usuário
+
+O Mercado Pago cobra uma **taxa por transação** sobre cada Pix recebido, e o repasse para a conta
+bancária tem prazo (configurável no painel: liberação imediata com taxa maior, ou prazos maiores
+com taxa menor). Conferir a tabela vigente no painel antes de fixar o valor final — com R$ 20,00 a
+taxa é de poucos centavos, mas o usuário deve saber que ela existe.
+
 ## Nome do evento
 
 **Desafío Farmácia Viva** (confirmar com o usuário se é "Desafío" com acento espanhol de propósito ou "Desafio" em português — foi escrito com acento na conversa, mas pode ter sido erro de digitação). Por padrão o sistema usa "Desafio Farmácia Viva" (grafia em português), configurável em um único lugar (`src/lib/config.ts`).
 
 ## Decisões de produto
 
-- **Inscrição gratuita** — por enquanto. O usuário disse que "ainda não foi decidido, pode ser só um valor significativo ou não", mas decidiu seguir com gratuita por ora. Vale manter o modelo de dados aberto para adicionar pagamento (Pix/Mercado Pago ou Stripe) no futuro sem grande refatoração, mas **não implementar pagamento agora**.
+- ~~**Inscrição gratuita**~~. **Superado e implementado**: a inscrição custa **R$ 20,00**, pagos via Pix pelo Mercado Pago — ver a seção "Pagamento da taxa de inscrição via Pix (Mercado Pago)" logo abaixo.
 - **Sem limite de vagas** — inscrições sempre abertas, sem bloqueio automático por quantidade.
 - **Corrida única, sem categorias** — é um "mistão" (todos correm juntos), um único percurso, sem separação por distância/sexo/idade. Por isso a numeração de peito pode ser simplesmente sequencial.
 - **Sem camiseta** — não há brinde de camiseta, então não perguntar tamanho no formulário.
@@ -120,25 +353,50 @@ Sequencial, gerado automaticamente na confirmação da inscrição (1, 2, 3, ...
 
 ## Estrutura de dados (Supabase)
 
-Tabela `inscricoes`:
-- `id` (bigint identity, gerado automaticamente) — também serve como número de peito
-- `nome` (text)
-- `cpf` (text, com constraint de unicidade para evitar inscrição duplicada)
-- `data_nascimento` (date)
-- `sexo` (text)
-- `email` (text)
-- `telefone` (text)
-- `created_at` (timestamptz, default now())
+Tabela `inscricoes` — definição completa e comentada em `supabase/schema.sql`. Resumo:
 
-SQL de criação em `supabase/schema.sql`.
+- `id` (bigint identity) — chave interna. **Não é mais o número de peito.**
+- `public_token` (uuid) — identificador público usado nas URLs de pagamento/confirmação.
+- `nome`, `cpf`, `data_nascimento`, `sexo`, `email`, `telefone` — dados do participante.
+- `payment_status` — `pendente` | `pago` | `expirado` | `falhou` | `cancelado`.
+- `numero_peito` (bigint, único, nulo até pagar) — vem da sequência `numero_peito_seq`.
+- `valor_centavos` — quanto foi cobrado.
+- `mp_order_id`, `mp_payment_id`, `mp_qr_code`, `mp_qr_code_base64`, `mp_ticket_url`,
+  `pix_expira_em` — dados da cobrança no Mercado Pago.
+- `pago_em`, `email_enviado_em`, `created_at` — marcos de tempo.
 
-## Páginas/telas planejadas
+A unicidade de CPF é um **índice parcial** (`inscricoes_cpf_pago_key`), válido só para
+`payment_status = 'pago'`. A função `confirmar_pagamento` faz a confirmação de forma atômica.
 
-1. **Home / página do evento** (`/`) — nome do evento, data/local (placeholder até serem definidos), informações gerais, premiação, botão de inscrição.
+## Páginas/telas
+
+1. **Home / página do evento** (`/`) — nome do evento, data/local, informações gerais, premiação,
+   valor da inscrição, botão de inscrição.
 2. **Formulário de inscrição** (`/inscricao`) — os campos listados acima.
-3. **Confirmação de inscrição** (`/inscricao/confirmacao`) — mostra o número de peito gerado.
-4. **Percurso** (`/percurso`) — aba com aviso "em breve", a ser substituída futuramente por mapa real (Strava/Google Maps embed ou GPX renderizado).
-5. **Painel admin** (`/admin`) — login por senha única, lista de inscritos, exportação CSV.
+3. **Pagamento** (`/inscricao/pagamento/[token]`) — QR code do Pix, código copia-e-cola, contagem
+   regressiva e verificação automática do pagamento.
+4. **Confirmação de inscrição** (`/inscricao/confirmacao?token=...`) — mostra o número de peito,
+   buscado no banco depois do pagamento confirmado.
+5. **Percurso** (`/percurso`) — aba com aviso "em breve", a ser substituída futuramente por mapa
+   real (Strava/Google Maps embed ou GPX renderizado).
+6. **Painel admin** (`/admin`) — login por senha única, lista de inscritos com situação de
+   pagamento e número de peito, exportação CSV.
+
+Rotas de API: `/api/inscricao/status` (consulta de status pela tela de espera),
+`/api/webhooks/mercadopago` (notificação de pagamento), `/api/admin/export` (CSV).
+
+## Agentes especializados (Claude Code)
+
+O projeto tem seis subagentes definidos em `.claude/agents/` (escopo de projeto — o Claude Code carrega esses arquivos automaticamente por estarem nessa pasta, não precisa instalar nada). Cada um tem uma função fixa e só o `tech-lead` pode invocar os outros cinco:
+
+- **tech-lead** — orquestrador, não escreve código. Lê o CLAUDE.md, classifica a tarefa (trivial / pequena / média / grande) e delega na ordem certa — ex.: `developer → qa` para algo pequeno, `developer → qa → auditor` para médio (acrescentando `security` quando há dados/autenticação/API), ou um fluxo completo `análise → security → developer → qa → performance → auditor` para mudanças grandes.
+- **developer** — implementação. É o único com permissão de escrita (`Edit`/`Write`); implementa a funcionalidade, corrige bugs, escreve testes seguindo os padrões já existentes, nunca reescreve nem remove código sem necessidade.
+- **qa** — teste e busca de bugs. Só leitura; tenta quebrar o que o developer fez (edge cases, regressão, validação, erros de API) e reporta PASS/FAIL/BLOCKED com bugs classificados por severidade — não corrige nada, só encontra e documenta.
+- **security** — segurança. Só leitura; revisa autenticação, autorização, secrets, injection (SQL/XSS/command), exposição de dados e dependências. Para uma auditoria completa pode escalar para o plugin `claude-security` (scan multi-agente), mas só com confirmação prévia do usuário, por ser caro em tokens.
+- **performance** — performance e escalabilidade. Só leitura; procura gargalos reais (não hipotéticos) em frontend, banco, cache, APIs externas, classificando por ATUAL / PROVÁVEL / HIPOTÉTICO.
+- **auditor** — auditoria técnica independente do que o developer fez. Só leitura; avalia arquitetura, dívida técnica e manutenibilidade, e dá um veredito final: APPROVED / APPROVED WITH WARNINGS / REQUIRES CHANGES / REJECTED.
+
+**Corrigido**: os seis arquivos vieram originalmente copiados de outro projeto (um app de rotas com mapas/GPS/"inversor", citado como "ROTAS PWC" em `qa.md`), com seções e comandos de teste (`cd app && node --test`, `npm run test:e2e` em `app/app.js`) que não existem aqui. Removidas as seções de mapas/geolocalização/inversor/KMZ de `developer.md`, `qa.md`, `security.md`, `performance.md` e `auditor.md`, e os comandos de teste do `qa.md` foram trocados pelos reais deste projeto (`npm run build`, `npm run lint` — não há suíte automatizada de unit/E2E aqui).
 
 ## Pendências / perguntas em aberto para quando o usuário retomar
 
@@ -149,5 +407,6 @@ SQL de criação em `supabase/schema.sql`.
 - ~~Criar conta na Vercel e fazer o deploy~~ — feito, site no ar (ver "Stack técnica escolhida" acima para a URL do repositório).
 - ~~Trocar o favicon pela logo~~ — feito via `src/app/icon.png`.
 - Decidir sobre rate limiting real (login admin + spam de inscrição) — ver seção Segurança acima.
+- ~~Implementar pagamento da taxa de inscrição via Pix~~ — **código feito** (Mercado Pago). Falta o que só o usuário pode fazer: rodar a migração no Supabase, criar a aplicação no painel do Mercado Pago, cadastrar a chave Pix, configurar o webhook e então testar de ponta a ponta. Lista detalhada na seção do pagamento, em "O que ainda falta para ir ao ar".
 - **Verificar um domínio no Resend antes de divulgar a inscrição para o público** (ver seção "Notificação por email" acima) — sem isso, só o email da conta Resend recebe as confirmações.
-- Se houver mais testes manuais de inscrição depois deste ponto, rodar de novo `alter table public.inscricoes alter column id restart with 1;` antes do lançamento real.
+- Se houver mais testes manuais de inscrição depois deste ponto, rodar de novo `alter sequence public.numero_peito_seq restart with 1;` antes do lançamento real (a numeração do peito saiu do `id` da tabela e passou a ter sequência própria).

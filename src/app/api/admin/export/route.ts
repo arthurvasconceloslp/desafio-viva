@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { ADMIN_SESSION_COOKIE, verifyAdminSessionToken } from "@/lib/admin-session";
-import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import {
+  getSupabaseAdmin,
+  PAYMENT_STATUS_LABEL,
+  type PaymentStatus,
+} from "@/lib/supabase-admin";
 import { formatCPF } from "@/lib/cpf";
 
 // Neutraliza CSV/Formula Injection: um campo começando com =, +, -, @ (ou tab/CR)
@@ -37,8 +41,11 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("inscricoes")
-    .select("id, nome, cpf, data_nascimento, sexo, email, telefone, created_at")
-    .order("id", { ascending: true });
+    .select(
+      "nome, cpf, data_nascimento, sexo, email, telefone, created_at, payment_status, numero_peito, valor_centavos, pago_em"
+    )
+    .order("numero_peito", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true });
 
   if (error) {
     return NextResponse.json(
@@ -48,25 +55,33 @@ export async function GET() {
   }
 
   const header = [
-    "Numero",
+    "Numero de peito",
+    "Situacao do pagamento",
     "Nome",
     "CPF",
     "Data de nascimento",
     "Sexo",
     "Email",
     "Telefone",
+    "Valor (R$)",
     "Inscrito em",
+    "Pago em",
   ];
 
   const rows = (data ?? []).map((row) => [
-    row.id,
+    row.numero_peito ?? "",
+    PAYMENT_STATUS_LABEL[row.payment_status as PaymentStatus] ??
+      row.payment_status,
     row.nome,
     formatCPF(row.cpf),
     row.data_nascimento,
     row.sexo,
     row.email,
     row.telefone,
+    // Vírgula decimal: é assim que o Excel em português lê o número.
+    (row.valor_centavos / 100).toFixed(2).replace(".", ","),
     new Date(row.created_at).toLocaleString("pt-BR"),
+    row.pago_em ? new Date(row.pago_em).toLocaleString("pt-BR") : "",
   ]);
 
   const csv = [header, ...rows]

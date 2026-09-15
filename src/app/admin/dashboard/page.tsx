@@ -1,24 +1,57 @@
-import { getSupabaseAdmin, type Inscricao } from "@/lib/supabase-admin";
+import {
+  getSupabaseAdmin,
+  PAYMENT_STATUS_LABEL,
+  type Inscricao,
+  type PaymentStatus,
+} from "@/lib/supabase-admin";
 import { formatCPF } from "@/lib/cpf";
+import { formatBRL } from "@/lib/config";
 import { logoutAdmin } from "../actions";
 
 export const dynamic = "force-dynamic";
 
+type Linha = Pick<
+  Inscricao,
+  | "id"
+  | "nome"
+  | "cpf"
+  | "sexo"
+  | "email"
+  | "telefone"
+  | "created_at"
+  | "payment_status"
+  | "numero_peito"
+  | "valor_centavos"
+>;
+
+const STATUS_CLASSE: Record<PaymentStatus, string> = {
+  pago: "bg-green-100 text-green-800",
+  pendente: "bg-amber-100 text-amber-800",
+  expirado: "bg-gray-100 text-gray-600",
+  falhou: "bg-brand-light text-brand-dark",
+  cancelado: "bg-gray-100 text-gray-600",
+};
+
 async function loadInscricoes(): Promise<{
-  data: Inscricao[];
+  data: Linha[];
   error: string | null;
 }> {
   try {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from("inscricoes")
-      .select("id, nome, cpf, sexo, email, telefone, created_at")
-      .order("id", { ascending: true });
+      .select(
+        "id, nome, cpf, sexo, email, telefone, created_at, payment_status, numero_peito, valor_centavos"
+      )
+      // Quem pagou primeiro aparece primeiro; tentativas sem pagamento vão
+      // para o fim da lista, sem se misturar com os inscritos de verdade.
+      .order("numero_peito", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: true });
 
     if (error) {
       return { data: [], error: "Não foi possível carregar as inscrições." };
     }
-    return { data: (data as Inscricao[]) ?? [], error: null };
+    return { data: (data as Linha[]) ?? [], error: null };
   } catch {
     return {
       data: [],
@@ -31,13 +64,26 @@ async function loadInscricoes(): Promise<{
 export default async function AdminDashboardPage() {
   const { data, error } = await loadInscricoes();
 
+  const pagos = data.filter((row) => row.payment_status === "pago");
+  const arrecadadoCentavos = pagos.reduce(
+    (total, row) => total + row.valor_centavos,
+    0
+  );
+
   return (
-    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
+    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Inscritos</h1>
           <p className="text-gray-600">
-            {data.length} inscrição(ões) confirmada(s).
+            {pagos.length} inscrição(ões) paga(s) · {formatBRL(arrecadadoCentavos)}{" "}
+            arrecadado
+            {data.length > pagos.length && (
+              <span className="text-gray-400">
+                {" "}
+                · {data.length - pagos.length} tentativa(s) sem pagamento
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-3">
@@ -69,7 +115,8 @@ export default async function AdminDashboardPage() {
           <table className="min-w-full divide-y divide-gray-100 text-sm">
             <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
               <tr>
-                <th className="px-4 py-3">Nº</th>
+                <th className="px-4 py-3">Peito</th>
+                <th className="px-4 py-3">Situação</th>
                 <th className="px-4 py-3">Nome</th>
                 <th className="px-4 py-3">CPF</th>
                 <th className="px-4 py-3">Sexo</th>
@@ -81,7 +128,18 @@ export default async function AdminDashboardPage() {
             <tbody className="divide-y divide-gray-100">
               {data.map((row) => (
                 <tr key={row.id}>
-                  <td className="px-4 py-3 font-semibold text-brand">{row.id}</td>
+                  <td className="px-4 py-3 font-semibold text-brand">
+                    {row.numero_peito ?? (
+                      <span className="text-gray-300">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_CLASSE[row.payment_status]}`}
+                    >
+                      {PAYMENT_STATUS_LABEL[row.payment_status]}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">{row.nome}</td>
                   <td className="px-4 py-3">{formatCPF(row.cpf)}</td>
                   <td className="px-4 py-3 capitalize">{row.sexo}</td>
@@ -94,7 +152,7 @@ export default async function AdminDashboardPage() {
               ))}
               {data.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
                     Nenhuma inscrição ainda.
                   </td>
                 </tr>

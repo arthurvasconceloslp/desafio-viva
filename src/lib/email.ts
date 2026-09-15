@@ -28,7 +28,10 @@ export async function sendConfirmationEmail(params: {
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
         <h1 style="color: #dc2626; font-size: 20px;">${EVENT.name}</h1>
         <p>Olá, ${primeiroNome}!</p>
-        <p>Sua inscrição foi confirmada. Guarde seu número de peito:</p>
+        <p>
+          Recebemos seu pagamento por Pix e sua inscrição está confirmada.
+          Guarde seu número de peito:
+        </p>
         <p style="font-size: 40px; font-weight: bold; color: #dc2626; margin: 16px 0;">
           ${params.numero}
         </p>
