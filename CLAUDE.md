@@ -15,8 +15,13 @@ login por senha única (cookie HMAC-assinado, sem guardar a senha em texto), exp
 proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, que substituiu
 `middleware.ts`).
 
-**Antes de divulgar para o público, faltam dois passos que só o usuário pode dar** — ver
-"O que ainda falta para ir ao ar".
+**Em 15/09/2026 o site passou por uma análise completa com os agentes** (`security`, `qa`,
+`performance`, `auditor`). O único achado bloqueante foi corrigido e publicado no mesmo dia, junto
+com as informações novas do evento — categorias, premiação e aviso de que não há kit. O relatório
+inteiro, com o que ficou aberto, está em "Resultado da análise completa com os agentes".
+
+**Antes de divulgar para o público, faltam passos que só o usuário pode dar, e a ordem entre eles
+importa** — ver "Bloqueiam a divulgação ao público".
 
 ### Histórico de bugs reais encontrados (todos já corrigidos)
 
@@ -32,6 +37,9 @@ detalhados nas seções marcadas com ⚠️ ao longo deste documento.
    contra notificações de teste), não de formato.
 5. **`"use server"` só exporta funções async** — exportar uma constante quebrava a página em
    runtime sem falhar no build.
+6. **CPF com duas cobranças Pix pagas travava a segunda inscrição para sempre**, com o dinheiro já
+   recebido e sem avisar ninguém — achado pelos agentes, não por teste manual. Ver "Resultado da
+   análise completa com os agentes".
 
 ### Como o formulário sobrevive ao reset do React 19
 
@@ -583,12 +591,19 @@ O projeto tem seis subagentes definidos em `.claude/agents/` (escopo de projeto 
 
 ### Bloqueiam a divulgação ao público
 
-1. **Resetar a sequência do número de peito.** As rodadas de teste consumiram números; sem isso o
-   primeiro inscrito de verdade não pega o peito nº 1:
-   `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
-2. **Uma inscrição paga de verdade, feita pelo usuário.** É o único teste que não pôde ser feito
+Continuam pendentes em 15/09/2026, e **a ordem entre eles importa** — foi por isso que a lista
+mudou de forma nesta sessão. Resetar a sequência antes do teste pago faz o próprio teste consumir
+o peito nº 1, obrigando a resetar de novo:
+
+1. **Uma inscrição paga de verdade, feita pelo usuário.** É o único teste que nunca pôde ser feito
    aqui: o sandbox aprovava sozinho, produção é Pix real. Conferir que o QR abre no app do banco,
    que o peito aparece e que a inscrição fica "Paga" no painel.
+2. **Apagar esse registro de teste** na tabela `inscricoes`.
+3. **Só então resetar a sequência do número de peito**, para que o primeiro inscrito de verdade
+   pegue o nº 1: `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do
+   Supabase.
+4. Ao divulgar, **avisar que o número de peito se recupera em `/consulta`** (CPF + data de
+   nascimento), porque o email de confirmação continua desligado na prática.
 
 ### Decisões em aberto
 
@@ -616,9 +631,14 @@ O projeto tem seis subagentes definidos em `.claude/agents/` (escopo de projeto 
 - O cron de reconciliação roda **uma vez por dia** porque o plano Hobby da Vercel rejeita, no
   deploy, qualquer expressão mais frequente. Em plano Pro, trocar a expressão em `vercel.json`.
 
-## Preparatório: análise completa do site com os agentes (próxima sessão)
+## Preparatório: análise completa do site com os agentes
 
-Esta seção existe para que a próxima sessão possa começar a análise **sem redescobrir contexto**.
+> **Esta análise JÁ FOI EXECUTADA em 15/09/2026.** O resultado está em "Resultado da análise
+> completa com os agentes", logo abaixo desta seção. Não refaça a varredura inteira do zero sem
+> motivo: as restrições, as escolhas deliberadas e os pontos de menor confiança descritos aqui
+> continuam válidos e são a melhor forma de orientar uma análise **parcial** e futura.
+
+Esta seção existe para que uma sessão possa conduzir a análise **sem redescobrir contexto**.
 Leia-a inteira antes de invocar qualquer agente.
 
 ### Como conduzir
@@ -715,3 +735,122 @@ independente rende mais:
 4. O que acontece com 50 pessoas se inscrevendo ao mesmo tempo?
 5. Algum dado pessoal (CPF, email, telefone) vaza por alguma rota pública?
 6. Se o usuário sumir por seis meses e voltar, o que neste código ele não vai conseguir manter?
+
+## Resultado da análise completa com os agentes (15/09/2026)
+
+Executado o fluxo `tech-lead → security + qa + performance + auditor`, só leitura, sem tocar no
+banco e sem criar cobrança. O `developer` entrou depois, num segundo turno, com escopo restrito
+às duas correções aprovadas. Build, lint e `npm audit` estavam limpos antes e continuam limpos.
+
+**Veredito**: nenhum achado exigia tirar o site do ar. Um achado era bloqueante para a divulgação
+em massa (C1, abaixo) e foi corrigido e publicado na mesma sessão.
+
+### Corrigido e no ar (commit `d1bf67d`)
+
+**C1 — mesmo CPF com duas cobranças Pix pagas.** Era o achado grave, e é o tipo de bug que este
+projeto já produziu várias vezes: silencioso. `createInscricao` só barrava CPF **já pago**, então
+quem achasse que a confirmação demorou e reenviasse o formulário gerava um segundo Pix. Pagas as
+duas, a primeira confirmava normalmente e a segunda esbarrava no índice único parcial
+`inscricoes_cpf_pago_key`. A função `confirmar_pagamento` não tratava `unique_violation`, então a
+exceção subia crua: webhook respondendo 500 para sempre (o Mercado Pago reenviando de 15 em 15
+minutos pelo mesmo motivo), inscrição presa em "pendente" com o dinheiro já recebido, e o único
+rastro num log da Vercel que o administrador não tem hábito de abrir. No painel ficava
+indistinguível de quem simplesmente não pagou.
+
+A correção tem quatro partes, e vale entender por que são quatro:
+
+- A função SQL trata `unique_violation` e devolve uma coluna nova `conflito` (migração
+  `supabase/migrations/002_conflito_cpf_duplicado_pago.sql`, **já aplicada em produção**).
+- `confirmarPagamento` marca a linha como `cancelado`, registra o caso com `console.error` e não
+  envia email. `reconcileOrder` devolve `"cancelado"`, nunca `"pago"`, para que nenhum dos três
+  caminhos de confirmação trate essa inscrição como confirmada.
+- O webhook responde **200**, não 500: o conflito é permanente, reenviar não resolveria nada.
+- `createInscricao` deixou de gerar um segundo Pix quando o CPF já tem um pendente **ainda
+  válido** — redireciona para a cobrança existente. Pix **vencido** continua liberando o CPF, que
+  é o comportamento desejado e documentado.
+
+**Atenção para quem mexer nisso depois**: essa última checagem **reduz** a frequência do problema,
+mas não o elimina — entre inserir a linha e gravar o `pix_expira_em` existe menos de um segundo em
+que a consulta não enxerga a pendente. Quem realmente protege é o `exception` na função SQL. Não
+remova o `exception` achando que a checagem no TypeScript basta.
+
+**I1 — `update` sem checagem de erro.** O `supabase-js` não lança em erro de `update`, só resolve
+com `{ error }` preenchido. O `update` que gravava `mp_order_id` e o QR não checava, então uma
+falha transitória deixava a linha `pendente` com `mp_order_id` nulo: invisível para
+`reconciliarPendentes` (que filtra `mp_order_id not null`) e para qualquer webhook. Agora lança e
+cai no `catch` que já existia.
+
+**Mensagem enganosa na tela de pagamento.** Todo estado não-pendente mostrava "nada foi cobrado".
+Verdade para `expirado` e `falhou`, **mentira para `cancelado`** — justamente o estado em que o
+dinheiro entrou. `cancelado` agora tem tela própria, que aponta para `/consulta` e orienta
+procurar a organização com o comprovante.
+
+### Achados confirmados que continuam abertos (nenhum bloqueia)
+
+Estão em ordem aproximada de valor. Os três primeiros são os que eu retomaria primeiro.
+
+- **Nenhuma observabilidade para o administrador.** O botão "Verificar pagamentos" já recebe
+  `{verificadas, confirmadas, expiradas}` de `reconciliarPendentes` e **descarta o resultado** —
+  só recarrega a tabela (`src/app/admin/actions.ts`). Todo erro vive em `console.error`. Para um
+  administrador não-técnico, uma falha recorrente (token do Mercado Pago expirado, por exemplo)
+  passa meses despercebida. Mostrar esse retorno na própria página é barato e é exatamente o tipo
+  de silêncio que já custou caro duas vezes aqui.
+- **`reconciliarPendentes` roda em série**, uma chamada HTTP por inscrição pendente, até 15s cada,
+  limitado a 50 (`src/lib/pagamento.ts`). Provável, não atual: com 30-50 pendentes acumulados pode
+  estourar o tempo da função. Não corrompe dado — o sintoma é o botão travar. Resolve-se com
+  concorrência limitada (`Promise.all` em lotes de 5-8), sem infraestrutura nova.
+- **Token de sessão do admin é determinístico** (`src/lib/admin-session.ts`): HMAC fixo de uma
+  string constante, sem nonce nem id de sessão. Funciona como senha reciclável de 8h, e um cookie
+  vazado não pode ser revogado isoladamente. Mitigado por HTTPS forçado e `httpOnly` confirmado.
+- **`confirmar_pagamento` está duplicada** entre `supabase/schema.sql` e as migrações. Corrigir num
+  arquivo e esquecer o outro faz um banco novo divergir do de produção em silêncio. Nesta sessão a
+  correção foi aplicada nos dois de propósito.
+- **Email interpola o nome sem escapar HTML** (`src/lib/email.ts`). O CSV já tem `csvEscape`
+  equivalente; o email não. Impacto baixo hoje porque o email está desligado, e o destinatário é
+  sempre o autor do próprio nome. Correção trivial.
+- **Comparação do `CRON_SECRET` não é timing-safe** (`src/app/api/cron/reconciliar/route.ts`),
+  inconsistente com o cuidado já tomado em `admin-session.ts`.
+- **O hook que reimpõe valores no DOM após o reset do React 19 está duplicado** entre
+  `InscricaoForm.tsx` e `ConsultaForm.tsx` — justamente o trecho que este documento descreve como
+  "mexer sem saber quebra o formulário". Candidato a virar um hook compartilhado.
+- **Sem validação central de variáveis de ambiente**: cada módulo falha ad hoc no primeiro uso.
+  Foi assim que a falta de `MP_WEBHOOK_SECRET` apareceu — em produção.
+- Menores: sem paginação no admin e no CSV; índice `inscricoes_mp_order_id_idx` redundante com o
+  `unique` da mesma coluna; data de nascimento sem piso (aceita 1900); Next.js 16.3.5 é major
+  recente, o que só significa custo de manutenção futuro.
+- **Reprocessar uma ordem em conflito queima mais um número de peito**, porque `nextval` não volta
+  atrás no rollback do bloco de exceção. Sem efeito funcional — o projeto já convive com buracos
+  na numeração. A função poderia retornar cedo quando a linha já está `cancelado`.
+
+### O que a análise confirmou que está certo
+
+Vale registrar para ninguém "consertar" o que não está quebrado: não há caminho para conseguir
+número de peito sem pagar; não há caminho para peito duplicado ou email duplicado no caso comum
+(o `SELECT ... FOR UPDATE` faz o trabalho); nenhum dado pessoal vaza por rota pública
+(`/api/inscricao/status` devolve só status/número/expiração, `/consulta` só primeiro nome, número
+e situação); todas as rotas administrativas fazem a própria checagem de sessão em vez de confiar
+apenas no `src/proxy.ts`; o CSV escapa fórmula corretamente; e 50 pessoas se inscrevendo ao mesmo
+tempo não é problema, porque cada confirmação é uma função independente e o lock é por linha.
+
+### Nota de ambiente: o navegador automatizado segue instável
+
+Como já tinha acontecido antes, o Claude in Chrome travou no meio da verificação: dois
+screenshots saíram cortados ou em branco. **Inspecionar o DOM via `javascript_tool` funcionou
+normalmente** e foi o que confirmou a hidratação (`__reactFiber$` presente na home, em
+`/inscricao` e em `/consulta`), a ausência de overflow horizontal e a geometria das seções novas.
+Se o screenshot falhar de novo, não insista — vá direto ao DOM.
+
+## O que a sessão de 15/09/2026 mudou no evento
+
+Decisões novas do usuário, já implementadas, publicadas e refletidas em "Decisões de produto":
+duas categorias (masculina e feminina, sem restrição de idade), premiação em dinheiro **por
+categoria** (R$ 200 / R$ 100 / R$ 50, totalizando R$ 700), troféu para os 3 primeiros de cada
+categoria, **medalha para todo participante que correr**, e nenhum kit de participação.
+
+Duas observações práticas que valem repetir ao usuário:
+
+- **A frase original era ambígua** em dois pontos — se a premiação em dinheiro era por categoria
+  ou no geral, e se a medalha era para todos ou só para o pódio. Ambos foram confirmados
+  perguntando. Se o assunto voltar, é essa a versão acordada.
+- **O custo das medalhas cresce com o número de inscritos**, diferente do troféu e do dinheiro,
+  que são fixos em 6 pessoas. O usuário foi avisado.
