@@ -223,6 +223,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // Nota: o caso de "CPF com duas cobranças Pix pendentes pagas" (ver
+    // comentário em `confirmarPagamento`, em src/lib/pagamento.ts) não lança
+    // exceção — a linha em conflito é marcada como 'cancelado' e o status
+    // devolvido reflete isso. Por isso cai no `return` normal abaixo, com
+    // 200, e não no `catch`: reenviar o webhook não resolveria nada, então
+    // não faz sentido pedir novo envio ao Mercado Pago.
     const status = await reconcileOrder(orderId);
     return NextResponse.json({ ok: true, status });
   } catch (error) {

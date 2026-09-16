@@ -67,6 +67,30 @@ export async function createInscricao(
     };
   }
 
+  // Além de "pago", também não gera um SEGUNDO Pix se já existe um pendente
+  // e ainda válido para o mesmo CPF. Sem isso, o mesmo CPF podia acabar com
+  // duas cobranças pendentes ao mesmo tempo; se as duas fossem pagas, a
+  // segunda confirmação esbarraria no índice único parcial
+  // `inscricoes_cpf_pago_key` (CPF já pago na primeira) e ficaria travada —
+  // ver o comentário em `confirmarPagamento`, em src/lib/pagamento.ts.
+  // Pix pendente mas JÁ VENCIDO não entra aqui de propósito: é o caso normal
+  // de "Pix expirado libera o CPF para nova tentativa", documentado no índice
+  // parcial acima.
+  const { data: pendenteValido } = await supabase
+    .from("inscricoes")
+    .select("public_token")
+    .eq("cpf", cpf)
+    .eq("payment_status", "pendente")
+    .not("pix_expira_em", "is", null)
+    .gt("pix_expira_em", new Date().toISOString())
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (pendenteValido) {
+    redirect(`/inscricao/pagamento/${pendenteValido.public_token}`);
+  }
+
   // A linha entra como 'pendente' e sem número de peito: ela guarda os dados
   // do participante enquanto o Pix não é pago. O peito só é atribuído quando
   // o webhook do Mercado Pago confirmar que o dinheiro entrou.
@@ -110,7 +134,7 @@ export async function createInscricao(
       notificationUrl: getWebhookUrl(),
     });
 
-    await supabase
+    const { error: updateError } = await supabase
       .from("inscricoes")
       .update({
         mp_order_id: charge.orderId,
@@ -124,6 +148,18 @@ export async function createInscricao(
           ).toISOString(),
       })
       .eq("id", inscricao.id);
+
+    if (updateError) {
+      // O supabase-js não lança em erro de update, só resolve a Promise com
+      // `error` preenchido — sem esta checagem, uma falha transitória aqui
+      // deixava a linha 'pendente' com mp_order_id nulo para sempre (fora do
+      // alcance de `reconciliarPendentes`, que só olha linhas com
+      // mp_order_id), mesmo com a cobrança já criada de verdade no Mercado
+      // Pago. Joga para o catch abaixo, que já sabe tratar esse cenário.
+      throw new Error(
+        `Falha ao salvar a cobrança Pix (order ${charge.orderId}) na inscrição ${inscricao.id}: ${updateError.message}`
+      );
+    }
   } catch (chargeError) {
     console.error("Falha ao gerar cobrança Pix:", chargeError);
     await supabase

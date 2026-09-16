@@ -28,9 +28,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="mx-auto grid max-w-5xl gap-6 px-4 py-12 sm:grid-cols-3 sm:px-6">
+      <section className="mx-auto grid max-w-5xl gap-6 px-4 py-12 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
         <InfoCard label="Data" value={EVENT.dateLabel} />
         <InfoCard label="Local" value={EVENT.locationLabel} />
+        <InfoCard label="Categorias" value={EVENT.categoriesLabel} />
         <InfoCard
           label="Inscrição"
           value={`${formatBRL(PAYMENT.feeAmountCents)} via Pix, vagas ilimitadas`}
@@ -44,7 +45,25 @@ export default function HomePage() {
 
       <section className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
         <h2 className="text-xl font-semibold text-gray-900">Premiação</h2>
-        <p className="mt-3 text-gray-600">{EVENT.awardsText}</p>
+        <ul className="mt-4 space-y-2">
+          {EVENT.awards.map((award) => (
+            <li
+              key={award.place}
+              className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-4 py-3 shadow-sm"
+            >
+              <span className="font-medium text-gray-800">{award.place}</span>
+              <span className="font-semibold text-brand">{award.prize}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-4 text-gray-600">{EVENT.awardsNote}</p>
+      </section>
+
+      <section className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+        <h2 className="text-xl font-semibold text-gray-900">
+          O que você recebe
+        </h2>
+        <p className="mt-3 text-gray-600">{EVENT.kitText}</p>
       </section>
 
       <section className="mx-auto max-w-3xl px-4 pb-16 sm:px-6">

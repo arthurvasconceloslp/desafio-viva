@@ -37,7 +37,9 @@ export async function sendConfirmationEmail(params: {
         </p>
         <p><strong>Data:</strong> ${EVENT.dateLabel}</p>
         <p><strong>Local:</strong> ${EVENT.locationLabel}</p>
+        <p><strong>Categorias:</strong> ${EVENT.categoriesLabel}</p>
         <p>${EVENT.awardsText}</p>
+        <p>${EVENT.kitText}</p>
         <p style="color: #6b7280; font-size: 13px; margin-top: 24px;">
           Nos vemos na corrida!
         </p>

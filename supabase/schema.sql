@@ -59,7 +59,12 @@ alter table public.inscricoes enable row level security;
 -- uma janela de corrida que poderia queimar dois números de peito para a
 -- mesma pessoa. Aqui o SELECT ... FOR UPDATE trava a linha até o fim da
 -- transação, e `ja_estava_pago` avisa o chamador para não reenviar o email.
-create or replace function public.confirmar_pagamento(
+-- `drop` antes do `create` porque o Postgres recusa trocar o tipo de retorno de
+-- uma função existente (erro 42P13), e este arquivo é reaplicado inteiro em
+-- bancos que já têm uma versão anterior da função.
+drop function if exists public.confirmar_pagamento(text, text);
+
+create function public.confirmar_pagamento(
   p_order_id text,
   p_payment_id text
 )
@@ -68,7 +73,16 @@ returns table (
   peito bigint,
   nome_participante text,
   email_participante text,
-  ja_estava_pago boolean
+  ja_estava_pago boolean,
+  -- Caso real encontrado em auditoria: nada impede o mesmo CPF gerar duas
+  -- cobranças Pix pendentes (só é bloqueado CPF já PAGO, na Server Action de
+  -- criação). Se as duas forem pagas, a primeira confirma normalmente; ao
+  -- confirmar a segunda, o UPDATE abaixo esbarraria no índice único parcial
+  -- `inscricoes_cpf_pago_key` (o CPF já tem uma linha "pago"). `conflito`
+  -- avisa o chamador desse caso, para que ele pare de tratar esta linha como
+  -- "vai confirmar assim que reprocessar" — sem isso, a exceção subia crua e
+  -- a linha ficava "pendente" para sempre, com o dinheiro já recebido.
+  conflito boolean
 )
 language plpgsql
 as $$
@@ -87,19 +101,30 @@ begin
 
   if v_row.payment_status = 'pago' then
     return query
-      select v_row.id, v_row.numero_peito, v_row.nome, v_row.email, true;
+      select v_row.id, v_row.numero_peito, v_row.nome, v_row.email, true, false;
     return;
   end if;
 
-  update public.inscricoes
-  set payment_status = 'pago',
-      numero_peito = coalesce(numero_peito, nextval('public.numero_peito_seq')),
-      mp_payment_id = coalesce(p_payment_id, mp_payment_id),
-      pago_em = now()
-  where id = v_row.id
-  returning * into v_row;
+  begin
+    update public.inscricoes
+    set payment_status = 'pago',
+        numero_peito = coalesce(numero_peito, nextval('public.numero_peito_seq')),
+        mp_payment_id = coalesce(p_payment_id, mp_payment_id),
+        pago_em = now()
+    where id = v_row.id
+    returning * into v_row;
+  exception
+    when unique_violation then
+      -- CPF já tem outra inscrição "pago" (a outra cobrança Pix do mesmo CPF
+      -- foi confirmada primeiro). Esta inscrição não pode virar "pago" — quem
+      -- chamou esta função decide o que fazer (hoje: marcar como "cancelado"
+      -- e registrar para o admin olhar manualmente).
+      return query
+        select v_row.id, null::bigint, v_row.nome, v_row.email, false, true;
+      return;
+  end;
 
   return query
-    select v_row.id, v_row.numero_peito, v_row.nome, v_row.email, false;
+    select v_row.id, v_row.numero_peito, v_row.nome, v_row.email, false, false;
 end;
 $$;

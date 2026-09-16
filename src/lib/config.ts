@@ -7,9 +7,32 @@ export const EVENT = {
   subtitle: "Corrida de aniversário da Farmácia Viva",
   dateLabel: "18 de outubro de 2026",
   locationLabel: "Concentração: Farmácia Viva, em frente à Praça da Bela Vista",
-  awardsText: "Premiação para os 3 primeiros colocados.",
   description:
-    "Uma corrida única, aberta a todos, para comemorar o aniversário da Farmácia Viva. Sem categorias, sem distinção de distância, sexo ou idade — todo mundo corre junto.",
+    "Uma corrida para comemorar o aniversário da Farmácia Viva: um só percurso, duas categorias — masculina e feminina — e nenhuma restrição de idade. Sua categoria é definida pelo campo Sexo do formulário de inscrição.",
+  categoriesLabel: "Masculina e feminina, sem restrição de idade",
+  /**
+   * Premiação em dinheiro POR CATEGORIA: cada pódio (masculino e feminino)
+   * recebe os três valores abaixo, então o total distribuído é o dobro.
+   */
+  awards: [
+    { place: "1º lugar", prize: "R$ 200,00" },
+    { place: "2º lugar", prize: "R$ 100,00" },
+    { place: "3º lugar", prize: "R$ 50,00" },
+  ],
+  awardsNote:
+    "Os valores acima valem para cada categoria — o pódio masculino e o feminino recebem os mesmos prêmios. Os 3 primeiros de cada categoria também levam troféu, e toda pessoa que correr recebe medalha.",
+  /**
+   * Aviso de que não há kit. É a pergunta mais provável de quem já correu
+   * outras provas, então aparece na home e no email de confirmação.
+   */
+  kitText:
+    "Esta corrida não terá kit de participação. O que será distribuído é: número de peito para todos os inscritos, medalha para todos que correrem, e troféu mais premiação em dinheiro para os 3 primeiros de cada categoria.",
+  /**
+   * Resumo curto de uma linha, para o email de confirmação, onde não cabe a
+   * lista inteira.
+   */
+  awardsText:
+    "Premiação por categoria (masculina e feminina): R$ 200,00 para o 1º lugar, R$ 100,00 para o 2º e R$ 50,00 para o 3º, com troféu para os 3 primeiros de cada categoria. Todo participante recebe medalha.",
 };
 
 /**

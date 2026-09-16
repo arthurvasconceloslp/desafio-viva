@@ -24,6 +24,9 @@ type ConfirmacaoRow = {
   nome_participante: string;
   email_participante: string;
   ja_estava_pago: boolean;
+  // Ver o comentário sobre `conflito` em confirmarPagamento: CPF duplicado
+  // pago em outra inscrição — este pagamento não pôde ser atribuído aqui.
+  conflito: boolean;
 };
 
 /**
@@ -119,8 +122,12 @@ export async function reconcileOrder(orderId: string): Promise<PaymentStatus> {
   const paymentId = order.transactions?.payments?.[0]?.id ?? null;
 
   if (status === "pago") {
-    await confirmarPagamento(orderId, paymentId);
-    return "pago";
+    const resultado = await confirmarPagamento(orderId, paymentId);
+    // Conflito de CPF duplicado pago (ver confirmarPagamento): a inscrição já
+    // foi marcada como 'cancelado' no banco. Devolvemos esse status real, não
+    // "pago" — quem chamou (webhook, tela de espera) não pode achar que esta
+    // inscrição em particular foi confirmada.
+    return resultado.conflito ? "cancelado" : "pago";
   }
 
   if (status !== "pendente") {
@@ -144,7 +151,7 @@ export async function reconcileOrder(orderId: string): Promise<PaymentStatus> {
 export async function confirmarPagamento(
   orderId: string,
   paymentId: string | null
-): Promise<{ numero: number | null }> {
+): Promise<{ numero: number | null; conflito: boolean }> {
   const supabase = getSupabaseAdmin();
 
   const { data, error } = await supabase.rpc("confirmar_pagamento", {
@@ -160,11 +167,36 @@ export async function confirmarPagamento(
   const row = (data as ConfirmacaoRow[] | null)?.[0];
   if (!row) {
     // Ordem que não corresponde a nenhuma inscrição nossa.
-    return { numero: null };
+    return { numero: null, conflito: false };
+  }
+
+  if (row.conflito) {
+    // O mesmo CPF gerou duas cobranças Pix pendentes e as duas foram pagas.
+    // A função `confirmar_pagamento` recusou esta (a segunda) porque o CPF
+    // já tem outra inscrição 'pago' — o índice único parcial
+    // `inscricoes_cpf_pago_key` não permite duas. O dinheiro desta ordem
+    // entrou de verdade, mas esta linha nunca vai virar 'pago': reenviar o
+    // webhook ou reconsultar não muda isso. Em vez de deixá-la 'pendente'
+    // para sempre (o bug original), marcamos como 'cancelado' para ela sair
+    // do radar da reconciliação automática (`reconciliarPendentes` só olha
+    // linhas 'pendente') e virar um caso manual — o admin precisa decidir
+    // (estornar pelo painel do Mercado Pago, ou contatar o participante).
+    console.error(
+      `Conflito ao confirmar pagamento: CPF já tem outra inscrição paga. ` +
+        `order=${orderId} inscricao_id=${row.inscricao_id} ` +
+        `nome=${row.nome_participante} email=${row.email_participante} — ` +
+        `pagamento recebido mas não atribuído; verificar manualmente.`
+    );
+    await supabase
+      .from("inscricoes")
+      .update({ payment_status: "cancelado" })
+      .eq("id", row.inscricao_id)
+      .eq("payment_status", "pendente");
+    return { numero: null, conflito: true };
   }
 
   if (row.ja_estava_pago) {
-    return { numero: row.peito };
+    return { numero: row.peito, conflito: false };
   }
 
   // Melhor-esforço: a inscrição já está confirmada no banco, então uma falha
@@ -188,5 +220,5 @@ export async function confirmarPagamento(
     );
   }
 
-  return { numero: row.peito };
+  return { numero: row.peito, conflito: false };
 }

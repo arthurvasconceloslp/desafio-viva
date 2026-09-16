@@ -39,6 +39,40 @@ export default async function PagamentoPage(
     redirect(`/inscricao/confirmacao?token=${token}`);
   }
 
+  // 'cancelado' é o único destes estados em que o dinheiro PODE ter entrado:
+  // é o status usado quando o mesmo CPF pagou duas cobranças Pix e esta foi a
+  // segunda (ver `confirmarPagamento`, em src/lib/pagamento.ts). Por isso ele
+  // não pode receber a mensagem de "nada foi cobrado", que é verdadeira para
+  // 'expirado' e 'falhou' mas seria mentira aqui.
+  if (inscricao.payment_status === "cancelado") {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-16 text-center sm:px-6">
+        <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
+          Esta inscrição foi cancelada
+        </h1>
+        <p className="mt-4 text-gray-600">
+          Se você já tinha outra inscrição paga com o mesmo CPF, ela continua
+          valendo — consulte o seu número de peito em{" "}
+          <Link href="/consulta" className="font-semibold text-brand underline">
+            Meu número
+          </Link>
+          .
+        </p>
+        <p className="mt-4 text-gray-600">
+          Se você pagou este código Pix e não encontrar sua inscrição, procure a
+          organização com o comprovante em mãos: o pagamento precisa ser
+          conferido manualmente.
+        </p>
+        <Link
+          href="/consulta"
+          className="mt-8 inline-block rounded-full bg-brand px-6 py-2.5 font-semibold text-white transition-colors hover:bg-brand-dark"
+        >
+          Consultar meu número
+        </Link>
+      </div>
+    );
+  }
+
   if (inscricao.payment_status !== "pendente") {
     const titulo =
       inscricao.payment_status === "expirado"

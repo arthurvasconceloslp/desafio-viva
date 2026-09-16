@@ -4,27 +4,62 @@ Sistema web de inscrição para a corrida de comemoração de aniversário da fa
 
 ## Status atual
 
-Implementação completa do código: todas as páginas, formulário de inscrição com Server Action + validação (zod, incluindo checagem de dígito verificador de CPF), painel admin com login por senha única (sessão via cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, substituiu `middleware.ts`). `npm run build` e `npm run lint` passam sem erros.
+**O site está no ar, cobrando R$ 20,00 de verdade**, em `https://desafio-viva.vercel.app`, com
+credenciais de **produção** do Mercado Pago. Banco vazio, sem registros de teste. `npm run build`
+e `npm run lint` passam sem erros.
 
-**Cobrança da taxa de inscrição via Pix (Mercado Pago) implementada E testada de ponta a ponta** contra a API real, com a conta de teste do Mercado Pago e o Supabase de verdade: inscrição, geração do QR code, confirmação automática do pagamento, número de peito, email, painel admin e CSV. Dois bugs sérios foram encontrados e corrigidos nesse teste — ver "Armadilha real: os status da Orders API" e "Armadilha real: maiúsculas no `data.id` do webhook" abaixo. **Publicado na Vercel e rodando com credenciais de PRODUÇÃO do Mercado Pago** — o site cobra dinheiro de verdade.
+O que existe: as 7 páginas listadas em "Páginas/telas", formulário com Server Action + validação
+(zod, com dígito verificador de CPF e denylist de CPFs de teste), cobrança Pix pelo Mercado Pago
+com três caminhos independentes de confirmação, página de consulta por CPF, painel admin com
+login por senha única (cookie HMAC-assinado, sem guardar a senha em texto), exportação CSV, e
+proteção de `/admin/dashboard` via `src/proxy.ts` (convenção nova do Next.js 16, que substituiu
+`middleware.ts`).
 
-Testado de ponta a ponta no navegador de verdade (Claude in Chrome) com Supabase propositalmente desconectado: home, formulário de inscrição (erro de validação por campo, banner geral de erro, fallback "banco não conectado"), login admin (senha errada, senha certa, dashboard, logout, proteção de rota pós-logout). Dois bugs reais de UX foram encontrados e corrigidos durante esse teste:
-1. O React 19 reseta o `<form action={...}>` nativamente após toda submissão de Server Action. Como os inputs eram não-controlados, qualquer erro de validação apagava tudo que o usuário tinha digitado. Corrigido tornando os campos de `InscricaoForm` controlados (`useState` + `value`/`onChange`).
-2. Mesmo controlado, o `<select>` de Sexo não se recuperava do reset nativo (bug conhecido do React com `<select>` controlado + reset de formulário) — o valor era enviado certo, mas a UI voltava a mostrar "Selecione", o que faria um reenvio seguinte falhar de verdade. Corrigido forçando a remontagem do `<select>` a cada resposta da action (chave incrementada via ajuste de estado durante o render, sem `useEffect`).
+**Antes de divulgar para o público, faltam dois passos que só o usuário pode dar** — ver
+"O que ainda falta para ir ao ar".
 
-**Supabase real já configurado e testado de ponta a ponta**: o usuário criou o projeto, rodou `supabase/schema.sql` e colou as credenciais em `.env.local` (gitignored). Testado com dados reais: inscrição grava no banco, número de peito sequencial funciona, constraint de CPF único bloqueia duplicata, dashboard admin lista o inscrito real, exportação CSV traz os dados certos. Todos os registros de teste foram apagados depois e a sequência do `id` foi resetada para reiniciar em 1 (`alter table public.inscricoes alter column id restart with 1;`) — **se mais testes forem feitos depois, repetir esse reset antes do lançamento real**, senão o primeiro inscrito de verdade não pega o peito nº1.
+### Histórico de bugs reais encontrados (todos já corrigidos)
 
-### Bateria final pré-deploy (build de produção local, `npm run build && npm run start`)
+Cada um destes só apareceu testando de verdade; nenhum era pego por build, lint ou tipos. Estão
+detalhados nas seções marcadas com ⚠️ ao longo deste documento.
 
-Rodada completa de testes antes de partir para a Vercel, tudo clicando de verdade no navegador (Claude in Chrome) contra o build de produção local, não o `next dev`:
-- Home, Percurso: renderização e hidratação ok (sem erros no console).
-- Cabeçalhos de segurança confirmados via `curl` na build de produção (CSP sem `unsafe-eval`, como esperado).
-- `/admin/dashboard` sem sessão → redireciona; `/api/admin/export` sem sessão → 401.
-- Inscrição: CPF da denylist rejeitado com os campos preservados (incluindo o `<select>` de Sexo); CPF válido gera peito corretamente; CPF duplicado é bloqueado contra o banco real; honeypot descarta um envio de "bot" simulado sem gravar nada.
-- Admin: senha errada rejeitada, senha certa loga, dashboard mostra o inscrito real certo, CSV exportado com os dados corretos, logout funciona.
-- Todos os registros de teste foram apagados de novo e pedi ao usuário para rodar o reset de sequência (`alter table ... restart with 1`) mais uma vez.
+1. **CSP quebrou a hidratação do site inteiro** — nada de JavaScript rodava, silenciosamente.
+2. **React 19 reseta o formulário depois de toda Server Action** — erros de validação apagavam
+   tudo que o usuário tinha digitado.
+3. **Status errados da Orders API** — "pago" é `processed`/`accredited`, não `approved`; nenhum
+   pagamento seria confirmado, jamais.
+4. **Assinatura do webhook nunca conferia** — era divergência de ambiente (segredo de produção
+   contra notificações de teste), não de formato.
+5. **`"use server"` só exporta funções async** — exportar uma constante quebrava a página em
+   runtime sem falhar no build.
 
-Nenhum problema novo encontrado nessa rodada — os bugs já corrigidos anteriormente (reset de formulário do React 19, CSP quebrando hidratação) permanecem corrigidos na build de produção.
+### Como o formulário sobrevive ao reset do React 19
+
+Vale registrar porque é contraintuitivo e mexer nisso sem saber quebra o formulário: o React 19
+chama `form.reset()` nativamente **depois** de toda submissão de Server Action, inclusive quando
+ela devolve erro de validação. Manter os campos controlados não basta, porque esse reset escreve
+no DOM por último.
+
+A solução em `InscricaoForm.tsx` (e repetida em `ConsultaForm.tsx`) é um `useEffect` que roda
+depois da pintura — ou seja, depois do reset nativo — e reimpõe os valores guardados em estado
+diretamente nos elementos do DOM. É o único ponto do fluxo que tem a palavra final.
+
+### Bateria de testes já executada
+
+Histórico das rodadas de teste, todas contra o banco Supabase de verdade e, nas mais recentes,
+contra o build de produção (`npm run build && npm run start`) ou contra o site publicado:
+
+- **Antes do pagamento existir**: home, percurso, validação por campo, banner de erro, fallback
+  de "banco não conectado", login admin (senha errada/certa), dashboard, logout e proteção de
+  rota pós-logout. Cabeçalhos de segurança conferidos com `curl`.
+- **Com o Mercado Pago em modo de teste**: formulário → QR code → confirmação automática →
+  peito nº 1 → email entregue; seis casos de webhook; idempotência comprovada (4 entregas do
+  mesmo evento, peito e email inalterados); admin e CSV; CPF duplicado nas três camadas.
+- **Em produção**: inscrição pelo formulário com a aba fechada logo depois, confirmada sozinha
+  pelo webhook, com assinatura válida; página `/consulta` nos casos "encontrado" e
+  "dados não conferem".
+
+Detalhes de cada rodada estão em "Testado de ponta a ponta", dentro da seção de pagamento.
 
 ### Segurança (revisão feita com a skill security-and-hardening)
 
@@ -37,7 +72,7 @@ Aplicado e testado:
 - Confirmado que não há risco de SQL injection (todo acesso ao Supabase é via client parametrizado, nunca SQL concatenado) nem XSS (React escapa toda saída, nenhum uso de `dangerouslySetInnerHTML`).
 - Removido o link "Acesso administrativo" do rodapé (`src/components/SiteFooter.tsx`), a pedido do usuário. **Importante**: isso é só discrição, não é uma proteção real — `/admin` continua acessível direto pela URL, e a segurança de verdade continua sendo a senha + cookie de sessão verificado no servidor (`src/proxy.ts`), não a ausência de um link visível.
 
-**Decidido com o usuário**: manter só a validação de dígito verificador de CPF (sem consulta paga à Receita Federal) e usar **email** (não SMS) para a notificação de confirmação — ver "Validação de CPF" e "Notificação por email" abaixo.
+**Decidido com o usuário**: manter só a validação de dígito verificador de CPF (sem consulta paga à Receita Federal) e usar **email** (não SMS) para a notificação de confirmação — ver "CPF: reforço além do dígito verificador" e "Notificação por email" abaixo.
 
 **Ainda em aberto**:
 - Sem limite de tentativas de senha no login do admin nem limite de envios repetidos no formulário público — mitigado parcialmente pelo honeypot, mas uma defesa mais forte (rate limiting de verdade) exigiria um serviço externo com estado compartilhado (ex: Upstash Redis), que é uma nova integração e tem custo/conta a criar. Não implementado ainda; perguntar ao usuário se quer investir nisso.
@@ -67,15 +102,30 @@ Ao adicionar os cabeçalhos de segurança (seção acima), configurei `Content-S
 
 ### Notificação por email — implementado e testado
 
-Usuário escolheu **email** (não SMS). Implementado com [Resend](https://resend.com) (`src/lib/email.ts`, chamado a partir de `createInscricao` em `src/app/inscricao/actions.ts`, logo após o insert no Supabase, antes do `redirect()`). Chave em `.env.local` (`RESEND_API_KEY`).
+Usuário escolheu **email** (não SMS). Implementado com [Resend](https://resend.com) em
+`src/lib/email.ts`.
 
-O envio é **melhor-esforço**: se o Resend falhar por qualquer motivo, o erro só é registrado com `console.error` no servidor — a inscrição já foi salva no banco e o participante é redirecionado normalmente para a confirmação. Testado ao vivo os dois caminhos: (1) email enviado com sucesso para o endereço da conta Resend, e (2) envio para um domínio de exemplo rejeitado pelo Resend (modo de teste) sem quebrar a inscrição.
+**Onde o envio acontece mudou com o pagamento.** Antes era disparado de `createInscricao`, logo
+após gravar a inscrição. Hoje é disparado de `confirmarPagamento`, em `src/lib/pagamento.ts`,
+quando o pagamento é confirmado — porque é aí que a inscrição de fato existe e o número de peito
+é atribuído. Chave em `.env.local` (`RESEND_API_KEY`).
+
+O envio é **melhor-esforço**: se o Resend falhar, o erro só é registrado com `console.error` no
+servidor e a inscrição continua confirmada. A coluna `email_enviado_em` só é preenchida quando o
+envio dá certo, o que também serve para não reenviar em caso de webhook duplicado.
+
+**Estado atual: o email está desligado na prática.** O usuário decidiu deixar o Resend para
+depois e avisar os inscritos manualmente. Como o remetente ainda é o endereço de teste do Resend,
+toda tentativa de envio para um participante real falha com
+`You can only send testing emails to your own email address` (confirmado nos logs de produção) —
+a inscrição é confirmada normalmente, mas ninguém recebe email. **A página `/consulta` foi criada
+justamente para cobrir essa lacuna.**
 
 **Limitação atual, importante para o lançamento**: o remetente usado é `onboarding@resend.dev`, o endereço de teste do Resend, que só entrega para o email da própria conta Resend (hoje `arthur.vasconceloslp@gmail.com` — note que é diferente do email da conta Claude usada nesta conversa). **Antes de divulgar a inscrição para o público, é preciso verificar um domínio próprio em resend.com/domains e trocar `FROM_ADDRESS` em `src/lib/email.ts`**, senão nenhum inscrito de verdade vai receber o email de confirmação.
 
 O usuário confirmou que a farmácia **não tem domínio próprio ainda**. Verificar um domínio no Resend em si é gratuito, mas exige possuir um domínio, o que normalmente tem custo de registro (~R$40/ano em `.com.br` via registro.br, ou ~US$10-15/ano em `.com`) se comprado do zero — não decidido ainda se/quando isso será feito, não é bloqueante (o email já funciona em modo melhor-esforço). **Dica para quando for registrar**: um único domínio serve tanto para o Resend (envio de email) quanto para apontar o site na Vercel (em vez do endereço padrão `*.vercel.app`) — vale registrar um só para os dois usos, não dois separados.
 
-**WhatsApp como alternativa foi considerado e descartado** (perguntado pelo usuário). Diferente do email, WhatsApp não depende de domínio, mas exige verificação de empresa na Meta e cobra por mensagem via API oficial (Twilio/Zenvia/Meta Cloud API) além de uma cota gratuita limitada — mais caro e mais burocrático que o email para uma corrida pequena e gratuita. Alternativas não-oficiais (automatizar um número pessoal) foram descartadas por violarem os termos do WhatsApp e arriscarem banir o número. Decisão: manter só email.
+**WhatsApp como alternativa foi considerado e descartado** (perguntado pelo usuário). Diferente do email, WhatsApp não depende de domínio, mas exige verificação de empresa na Meta e cobra por mensagem via API oficial (Twilio/Zenvia/Meta Cloud API) além de uma cota gratuita limitada — mais caro e mais burocrático que o email para uma corrida pequena. Alternativas não-oficiais (automatizar um número pessoal) foram descartadas por violarem os termos do WhatsApp e arriscarem banir o número. Decisão: manter só email.
 
 ## Pagamento da taxa de inscrição via Pix (Mercado Pago) — IMPLEMENTADO
 
@@ -204,25 +254,22 @@ Truque essencial: **`payer.first_name = "APRO"`** faz o Pix de teste ser aprovad
 automaticamente em poucos segundos, sem precisar pagar nada. Foi assim que os status acima
 foram confirmados.
 
-### ⚠️ Armadilha real: maiúsculas no `data.id` do webhook
+### Tolerância a variações do `data.id` (defensiva, não foi a causa de nada)
 
 A documentação do Mercado Pago diz que o manifesto assinado usa o `data.id` **em minúsculas**
-quando ele é alfanumérico, mas o `WebhookSignatureValidator` do SDK oficial usa o valor
-exatamente como recebido — e os ids de ordem chegam em MAIÚSCULAS (`ORDTST01...`). Se as duas
-pontas discordarem, **todo webhook legítimo seria rejeitado como falso** (401) e nenhum
-pagamento se confirmaria por esse caminho — de novo, em silêncio.
+quando ele é alfanumérico, enquanto o `WebhookSignatureValidator` do SDK oficial usa o valor
+exatamente como recebido — e os ids de ordem chegam em MAIÚSCULAS. Isso parecia explicar as
+rejeições, e `validarAssinatura` passou a testar várias grafias do id (como veio, em minúsculas,
+e o manifesto sem o trecho `id:`, além de aceitar tanto `data.id` quanto `id` na query).
 
-Confirmado em teste: assinando com o id em minúsculas, a validação do SDK falhava com 401.
-Como não dá para saber com certeza qual grafia o Mercado Pago usa em produção sem receber um
-webhook real dele, `validarAssinatura` (no route handler) agora tenta **as duas grafias** e só
-rejeita se nenhuma bater. Isso não enfraquece a proteção: as duas continuam exigindo o HMAC
-correto, feito com o segredo que só o Mercado Pago conhece. A insistência só acontece quando a
-falha foi de HMAC — cabeçalho ausente/malformado e timestamp fora da tolerância (replay)
-continuam sendo rejeitados de primeira.
+**Essa hipótese estava errada** — a causa real era outra, descrita na seção seguinte. A
+tolerância foi mantida mesmo assim, porque é barata e não enfraquece nada: cada variação
+continua exigindo o HMAC correto, feito com o segredo que só o Mercado Pago conhece. Falhas que
+não são de HMAC (cabeçalho ausente ou malformado, timestamp fora da tolerância de 5 minutos, que
+é a proteção contra replay) continuam sendo rejeitadas de primeira, sem insistência.
 
-**Quando o primeiro pagamento real acontecer, conferir no log se o webhook foi aceito.** Se
-aparecer `Webhook do Mercado Pago rejeitado (SignatureMismatch)`, o problema é outro e vale
-investigar — mas o participante ainda assim é confirmado pela tela de espera.
+Fica aqui como registro para que ninguém "simplifique" esse código achando que é redundante sem
+ler a história completa.
 
 ### A assinatura do webhook: o mistério e a solução
 
@@ -306,6 +353,11 @@ pagaram). O peito vem da sequência `numero_peito_seq`.
 - `SITE_URL` — opcional. Em produção a Vercel já injeta `VERCEL_PROJECT_PRODUCTION_URL`, que
   `src/lib/site-url.ts` usa como fallback. Definir só quando houver domínio próprio, ou para testar
   localmente com túnel.
+- `CRON_SECRET` — segredo que a Vercel envia no cabeçalho `Authorization` ao disparar o cron de
+  reconciliação. A rota `/api/cron/reconciliar` aceita esse bearer **ou** uma sessão de admin.
+- `MP_WEBHOOK_DEBUG` — opcional, existia só para diagnóstico (registrava a assinatura recebida).
+  Foi removida da Vercel depois que o problema da assinatura foi resolvido; o código continua
+  suportando, caso precise voltar.
 
 ### Testado de ponta a ponta (15/09/2026)
 
@@ -325,8 +377,10 @@ O que passou:
   confirmação com o **peito nº 1**. Email de confirmação realmente entregue pelo Resend
   (`email_enviado_em` preenchido no banco).
 - Webhook, seis casos: assinatura falsa → 401; assinatura válida com id maiúsculo → 200;
-  assinatura válida com id minúsculo → 200 (depois do endurecimento acima); replay com
-  timestamp de 1 hora atrás → 401; tópico `payment` → 200 ignorado; reenvio duplicado → 200.
+  assinatura válida com id minúsculo → 200; replay com timestamp de 1 hora atrás → 401; tópico
+  `payment` → 200 ignorado; reenvio duplicado → 200. **Atenção**: esses 401 refletem o
+  comportamento daquele momento. Hoje assinatura inválida **não** gera mais 401 — ver
+  "A assinatura do webhook: o mistério e a solução".
 - **Idempotência comprovada**: após 4 entregas de webhook bem-sucedidas para a mesma ordem, o
   `numero_peito` continuou 1 e o `email_enviado_em` continuou com o mesmo horário — nenhum
   número queimado a mais, nenhum email repetido.
@@ -420,9 +474,10 @@ taxa é de poucos centavos, mas o usuário deve saber que ela existe.
 
 - ~~**Inscrição gratuita**~~. **Superado e implementado**: a inscrição custa **R$ 20,00**, pagos via Pix pelo Mercado Pago — ver a seção "Pagamento da taxa de inscrição via Pix (Mercado Pago)" logo abaixo.
 - **Sem limite de vagas** — inscrições sempre abertas, sem bloqueio automático por quantidade.
-- **Corrida única, sem categorias** — é um "mistão" (todos correm juntos), um único percurso, sem separação por distância/sexo/idade. Por isso a numeração de peito pode ser simplesmente sequencial.
-- **Sem camiseta** — não há brinde de camiseta, então não perguntar tamanho no formulário.
-- **Premiação apenas para os 3 primeiros colocados** — isso é só informativo na página do evento, não impacta o sistema de inscrição.
+- **Duas categorias: masculina e feminina, sem restrição de idade** — decidido em 15/09/2026, substituindo a decisão anterior de "mistão sem categorias". O percurso continua único; o que muda é só a apuração do resultado. **A categoria sai do campo `sexo` que o formulário já coletava** — nenhuma coluna nova foi criada, e o CSV do admin já traz esse campo, então dá para separar os dois pódios na planilha.
+- **A numeração de peito continua sequencial e única para as duas categorias** — não há faixa separada por categoria. Foi uma escolha consciente: o peito identifica a pessoa, a categoria vem do cadastro dela.
+- **Sem camiseta e sem kit** — não há kit de participação nenhum. O evento distribui: número de peito para todos os inscritos, medalha para todos que correrem, e troféu mais dinheiro para os 3 primeiros de cada categoria. O site avisa isso explicitamente na seção "O que você recebe" da home, porque é a primeira pergunta de quem já correu outras provas.
+- **Premiação em dinheiro, por categoria**: R$ 200,00 para o 1º lugar, R$ 100,00 para o 2º e R$ 50,00 para o 3º — **em cada categoria**, ou seja, R$ 700,00 no total. Confirmado com o usuário em 15/09/2026 (a frase original era ambígua tanto sobre isso quanto sobre quem ganha medalha). Nada disso impacta o sistema de inscrição: é texto, todo concentrado em `EVENT` (`src/lib/config.ts`), que alimenta a home e o email de confirmação.
 - **Percurso/rota ainda não definido** — o usuário não tem GPX nem link do Strava/Google Maps ainda. Deixar uma aba/seção "Percurso" na página com aviso de "em breve" / "informações do percurso serão divulgadas em breve". Implementar a exibição real do mapa depois, quando o usuário fornecer um link (Strava/Google Maps) ou arquivo GPX.
 - **Data e local do evento**: definidos. Data: **18 de outubro de 2026**. Local de concentração: **Farmácia Viva, em frente à Praça da Bela Vista**. Editável em `src/lib/config.ts` (`EVENT.dateLabel` / `EVENT.locationLabel`).
 - **Logo e cores**: arquivo `LOGO.png` já está na pasta do projeto (copiado para `public/logo.png`, usado no header/home, e também como favicon via `src/app/icon.png` — convenção de ícone do Next.js App Router, substituiu o `favicon.ico` padrão do scaffold). Cores de identidade visual extraídas da logo e configuradas no tema Tailwind (vermelho ~#DC3545 como cor primária).
@@ -439,13 +494,20 @@ Apenas dados básicos, sem camiseta:
 
 ## Numeração do peito
 
-Sequencial, gerado automaticamente na confirmação da inscrição (1, 2, 3, ...). O participante deve conseguir ver seu número de peito logo após se inscrever (ex: tela de confirmação).
+Sequencial (1, 2, 3, ...), vindo da sequência Postgres `numero_peito_seq`. **Atribuído na
+confirmação do pagamento**, não no envio do formulário — quem não pagou não tem peito, e o `id`
+da tabela deixou de servir para isso porque passou a ter buracos.
+
+O participante vê o número na tela de confirmação logo após o pagamento cair e, se tiver perdido
+essa tela, pode recuperá-lo em `/consulta` com CPF e data de nascimento.
 
 ## Painel administrativo (para o pai do usuário)
 
 - Precisa existir, protegido por login.
 - **Autenticação escolhida: senha única simples** (não é login com email/senha via Supabase Auth) — mais rápido de implementar, suficiente para um único administrador por enquanto. A senha é definida pela variável de ambiente `ADMIN_PASSWORD` (nunca hardcoded no código) — o usuário escolhe e configura essa senha localmente (`.env.local`) e depois na Vercel.
-- Deve permitir ver a lista de inscritos (com número de peito) e **exportar em CSV/Excel**.
+- Permite ver a lista de inscritos com número de peito e situação de pagamento, **exportar em
+  CSV/Excel**, e um botão **"Verificar pagamentos"** que pergunta ao Mercado Pago o que aconteceu
+  com as inscrições ainda pendentes (útil quando alguém diz que pagou e não apareceu).
 
 ## Stack técnica escolhida
 
@@ -453,7 +515,20 @@ Sequencial, gerado automaticamente na confirmação da inscrição (1, 2, 3, ...
 - **Banco de dados**: Supabase (plano gratuito)
 - **Hospedagem**: Vercel (plano gratuito)
 
-**Deploy feito e site no ar.** Código no GitHub em `https://github.com/arthurvasconceloslp/desafio-viva` (repositório privado, branch `main`), conectado à Vercel via login com GitHub. Variáveis de ambiente (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, `RESEND_API_KEY`) configuradas no dashboard da Vercel, copiadas de `.env.local`. Todo `git push` para `main` dispara redeploy automático na Vercel.
+**Deploy feito e site no ar** em `https://desafio-viva.vercel.app`. Código no GitHub em
+`https://github.com/arthurvasconceloslp/desafio-viva` (repositório privado, branch `main`),
+conectado à Vercel via login com GitHub. Variáveis de ambiente configuradas no dashboard da
+Vercel: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, `RESEND_API_KEY`,
+`MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` e `CRON_SECRET`.
+
+Todo `git push` para `main` dispara redeploy automático na Vercel. **Mudar uma variável de
+ambiente no dashboard não tem efeito sozinha** — ela só passa a valer no próximo deploy, o que
+já causou confusão uma vez (o site continuou usando o token antigo depois de a variável ter sido
+trocada).
+
+O diretório está linkado ao projeto da Vercel (`.vercel/`, gitignored), então a CLI funciona
+direto: `vercel logs`, `vercel env ls`, `vercel env add`. Vale saber que `vercel env pull`
+**mascara valores sensíveis** como `[SENSITIVE]` — não dá para ler um segredo de volta por ali.
 
 ## Estrutura de dados (Supabase)
 
@@ -506,13 +581,137 @@ O projeto tem seis subagentes definidos em `.claude/agents/` (escopo de projeto 
 
 ## Pendências / perguntas em aberto para quando o usuário retomar
 
-- Confirmar grafia final do nome do evento ("Desafío" vs "Desafio") — hoje está como "Desafio Farmácia Viva" em `src/lib/config.ts`.
-- ~~Definir data e local do evento~~ — feito: 18/10/2026, concentração na Farmácia Viva em frente à Praça da Bela Vista.
-- ~~Definir a senha do painel admin~~ — feito, está em `.env.local` (`ADMIN_PASSWORD`).
-- ~~Criar conta no Supabase e configurar `.env.local`~~ — feito. Variáveis reais: `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` (chave secreta `sb_secret_...`, não a `sb_publishable_...`) — não usamos Supabase Auth nem anon key, tudo passa pela service role no servidor.
-- ~~Criar conta na Vercel e fazer o deploy~~ — feito, site no ar (ver "Stack técnica escolhida" acima para a URL do repositório).
-- ~~Trocar o favicon pela logo~~ — feito via `src/app/icon.png`.
-- Decidir sobre rate limiting real (login admin + spam de inscrição) — ver seção Segurança acima.
-- ~~Implementar pagamento da taxa de inscrição via Pix~~ — **código feito** (Mercado Pago). Falta o que só o usuário pode fazer: rodar a migração no Supabase, criar a aplicação no painel do Mercado Pago, cadastrar a chave Pix, configurar o webhook e então testar de ponta a ponta. Lista detalhada na seção do pagamento, em "O que ainda falta para ir ao ar".
-- **Verificar um domínio no Resend antes de divulgar a inscrição para o público** (ver seção "Notificação por email" acima) — sem isso, só o email da conta Resend recebe as confirmações.
-- Se houver mais testes manuais de inscrição depois deste ponto, rodar de novo `alter sequence public.numero_peito_seq restart with 1;` antes do lançamento real (a numeração do peito saiu do `id` da tabela e passou a ter sequência própria).
+### Bloqueiam a divulgação ao público
+
+1. **Resetar a sequência do número de peito.** As rodadas de teste consumiram números; sem isso o
+   primeiro inscrito de verdade não pega o peito nº 1:
+   `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
+2. **Uma inscrição paga de verdade, feita pelo usuário.** É o único teste que não pôde ser feito
+   aqui: o sandbox aprovava sozinho, produção é Pix real. Conferir que o QR abre no app do banco,
+   que o peito aparece e que a inscrição fica "Paga" no painel.
+
+### Decisões em aberto
+
+- **Grafia do nome do evento**: "Desafío" (acento espanhol, como foi escrito na conversa original)
+  ou "Desafio"? Hoje o sistema usa **"Desafio Farmácia Viva"**, em `src/lib/config.ts`.
+- **Conta que recebe o dinheiro**: hoje é a conta pessoal do usuário, não uma conta da farmácia
+  com CNPJ. Se for mudar, o momento certo é antes de haver inscritos pagantes.
+- **Rate limiting real** (tentativas de senha no admin e spam no formulário público). Hoje há só
+  o honeypot. Uma defesa de verdade exigiria um serviço externo com estado compartilhado
+  (ex.: Upstash Redis) — nova integração, com conta a criar. Nunca foi decidido.
+- **Email de confirmação (Resend)**: desligado na prática por decisão do usuário, que avisa
+  manualmente. Para religar, verificar um domínio em resend.com/domains e trocar `FROM_ADDRESS`
+  em `src/lib/email.ts`. Um domínio próprio serve para os dois usos: Resend e endereço do site na
+  Vercel.
+- **Percurso**: continua "em breve". Falta o usuário fornecer GPX ou link do Strava/Google Maps.
+- **Alerta do OWASP ZAP**: ficou pendente o nome exato do alerta que o colega do usuário
+  reportou, para confirmar se é falso positivo (ver a seção sobre o ZAP).
+
+### Lembretes operacionais
+
+- Se novos testes de inscrição forem feitos, **apagar os registros e resetar a sequência de novo**
+  antes do lançamento.
+- Cobranças Pix não pagas expiram sozinhas e aparecem no painel do Mercado Pago. As que sobraram
+  das verificações são inofensivas.
+- O cron de reconciliação roda **uma vez por dia** porque o plano Hobby da Vercel rejeita, no
+  deploy, qualquer expressão mais frequente. Em plano Pro, trocar a expressão em `vercel.json`.
+
+## Preparatório: análise completa do site com os agentes (próxima sessão)
+
+Esta seção existe para que a próxima sessão possa começar a análise **sem redescobrir contexto**.
+Leia-a inteira antes de invocar qualquer agente.
+
+### Como conduzir
+
+O ponto de entrada é o **tech-lead**, que é o único que pode invocar os outros cinco. Peça a ele
+uma análise completa e deixe que ele distribua. O fluxo esperado para uma revisão ampla é:
+
+```
+análise → security → qa → performance → auditor
+```
+
+O **developer** só entra depois, para corrigir o que for aprovado — não o chame na fase de
+diagnóstico, para não misturar quem encontra com quem conserta.
+
+**Peça um veredito consolidado**, não cinco relatórios soltos: o que precisa ser corrigido antes
+de divulgar, o que pode esperar, e o que é aceitável como está. Boa parte das escolhas abaixo foi
+deliberada, e um relatório que as trate como defeito vai gerar retrabalho.
+
+### Verificação antes de começar
+
+```bash
+npm run build     # build de produção; erros de tipo aparecem aqui
+npm run lint      # ESLint
+npm audit         # dependências
+```
+
+Não existe suíte automatizada de unit/integration/E2E — a verificação sempre foi build, lint e
+teste manual no navegador. **A ausência de testes automatizados é, ela própria, um achado
+legítimo para o auditor**, e provavelmente o mais relevante do projeto.
+
+### ⚠️ Restrições que a análise precisa respeitar
+
+Isto não é um projeto de brinquedo rodando local. Antes de qualquer agente tocar em algo:
+
+1. **O site está no ar cobrando dinheiro de verdade.** Uma inscrição de teste em produção cria
+   uma cobrança Pix real na conta pessoal do usuário. Não crie inscrições em produção sem
+   necessidade, e apague o que criar.
+2. **O banco é compartilhado e é o de produção.** Não há ambiente de staging. Toda escrita em
+   `inscricoes` afeta dados reais. Prefira leitura; para escrita, use ids explícitos e apague
+   depois.
+3. **A tabela deve ficar vazia até o lançamento.** Se sobrar registro de teste, apague e peça ao
+   usuário para resetar `numero_peito_seq`.
+4. **Nunca publique (`git push`) sem o usuário mandar.** Todo push para `main` redeploya em
+   produção.
+5. **Segredos ficam só em `.env.local`** (gitignored) e nas variáveis da Vercel. O usuário tem
+   histórico de colar segredos no lugar errado — confira antes de assumir que estão certos.
+
+### Escolhas deliberadas — não reportar como defeito sem ler a justificativa
+
+Cada uma destas parece um erro para quem chega de fora, e todas têm a razão registrada neste
+documento:
+
+| Escolha | Onde está a justificativa |
+|---|---|
+| Webhook aceita notificação sem assinatura válida | "A assinatura do webhook: o mistério e a solução" |
+| `'unsafe-inline'` em `script-src` na CSP | "CSP quebrou a hidratação do site inteiro" |
+| Serviço de pagamento é o Mercado Pago, não o Stripe | "Por que Mercado Pago e não Stripe" |
+| `useEffect` reimpondo valores no DOM do formulário | "Como o formulário sobrevive ao reset do React 19" |
+| CPF único só entre inscrições pagas | "Mudanças no banco" |
+| Confirmação em três caminhos redundantes | "Três caminhos de confirmação (de propósito)" |
+| Cron diário, e não a cada 5 minutos | "Três caminhos de confirmação" (limite do plano Hobby) |
+| Consulta pública exige CPF **e** data de nascimento | `Página "Meu número" (/consulta)` |
+| Sem testes automatizados | nunca houve; é achado legítimo |
+
+### O que vale a pena olhar de verdade
+
+Pontos onde eu, que escrevi o código, tenho menos confiança — é aqui que uma revisão
+independente rende mais:
+
+- **`src/lib/pagamento.ts`** é o coração do sistema. `reconcileOrder`, `confirmarPagamento` e
+  `reconciliarPendentes` podem ser chamados ao mesmo tempo por três gatilhos diferentes. A
+  idempotência real mora na função Postgres `confirmar_pagamento` (`SELECT ... FOR UPDATE`);
+  confirmar que não existe caminho que atribua dois peitos ou reenvie email.
+- **`reconciliarPendentes` roda em série**, com uma chamada HTTP ao Mercado Pago por inscrição
+  pendente, limitada a 50. Com muitos inscritos isso pode estourar o tempo da função. O
+  performance deve olhar o número real, não o hipotético.
+- **`/api/inscricao/status` consulta o Mercado Pago a cada chamada** enquanto a inscrição está
+  pendente, e o cliente faz polling a cada 6 segundos. Custo aceitável hoje; vale calcular o que
+  acontece com dezenas de pessoas pagando ao mesmo tempo.
+- **Enumeração em `/consulta`**: a proteção é exigir CPF + data de nascimento e devolver mensagem
+  genérica. Não há rate limiting. Avaliar se é suficiente na prática.
+- **O campo Nome não filtra HTML**. React escapa na renderização, mas o valor vai cru para o CSV
+  e para o email. O escape de fórmula do CSV já existe (`csvEscape`); conferir o email.
+- **`src/app/admin/`**: a sessão é um HMAC fixo derivado de `ADMIN_PASSWORD`, sem expiração no
+  próprio token (só o `maxAge` do cookie) e sem invalidação. Trocar a senha invalida tudo, o que
+  é aceitável para um admin só — confirmar que não há caminho pior.
+- **Acessibilidade e responsividade** nunca foram testadas de propósito. Vale uma passada.
+
+### Perguntas que a análise deveria responder
+
+1. Existe algum caminho em que alguém consiga número de peito **sem pagar**?
+2. Existe algum caminho em que alguém **pague e não seja confirmado**, sem que ninguém perceba?
+3. O que acontece se o Mercado Pago ficar fora do ar por uma hora durante a inscrição?
+4. O que acontece com 50 pessoas se inscrevendo ao mesmo tempo?
+5. Algum dado pessoal (CPF, email, telefone) vaza por alguma rota pública?
+6. Se o usuário sumir por seis meses e voltar, o que neste código ele não vai conseguir manter?
