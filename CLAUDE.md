@@ -5,8 +5,8 @@ Sistema web de inscrição para a corrida de comemoração de aniversário da fa
 ## Status atual
 
 **O site está no ar, cobrando R$ 20,00 de verdade**, em `https://desafio-viva.vercel.app`, com
-credenciais de **produção** do Mercado Pago. Banco vazio, sem registros de teste. `npm run build`
-e `npm run lint` passam sem erros.
+credenciais de **produção** do Mercado Pago. **A tabela já tem inscrições reais** — ver o aviso
+logo abaixo. `npm run build` e `npm run lint` passam sem erros.
 
 O que existe: as 7 páginas listadas em "Páginas/telas", formulário com Server Action + validação
 (zod, com dígito verificador de CPF e denylist de CPFs de teste), cobrança Pix pelo Mercado Pago
@@ -22,6 +22,38 @@ inteiro, com o que ficou aberto, está em "Resultado da análise completa com os
 
 **Antes de divulgar para o público, faltam passos que só o usuário pode dar, e a ordem entre eles
 importa** — ver "Bloqueiam a divulgação ao público".
+
+### ⚠️ A tabela não está mais vazia — leia antes de qualquer coisa
+
+**A partir de 15/09/2026 o site está divulgado e recebendo inscrições reais.** O usuário pediu
+explicitamente que, daqui em diante, o trabalho seja separado entre um **ambiente de testes** e o
+**ambiente de produção**, em vez de tudo acontecer contra o sistema vivo como acontecia durante o
+desenvolvimento.
+
+O que isso proíbe na prática:
+
+- **Não criar inscrição pelo site em produção para testar nada.** Cada uma gera uma cobrança Pix
+  real na conta pessoal do usuário e uma linha no meio de participantes pagantes.
+- **Não escrever na tabela `inscricoes` de produção** para experimentar. Preferir leitura; para
+  responder uma dúvida, ler o código ou consultar, não inserir.
+- **Nunca mais rodar `alter sequence public.numero_peito_seq restart with 1;`.** Esse comando era
+  correto enquanto a tabela só tinha registros de teste. Com inscritos reais já numerados, ele faz
+  a sequência devolver números **já ocupados**, o que colide com o índice único de `numero_peito` e
+  passa a **quebrar a confirmação de pagamento** de quem pagar depois. Só voltaria a ser seguro se
+  a tabela estivesse comprovadamente vazia.
+- **Cuidado redobrado com migrações**: `supabase/migrations/` agora roda contra um banco com dados
+  de gente de verdade. `create or replace` e adicionar coluna são seguros; qualquer `drop`,
+  `update` em massa ou `alter column` precisa ser discutido antes.
+
+O que substitui o teste em produção: `npm run build`, `npm run lint`, subir o servidor de produção
+local (`npm run start`) e inspecionar o DOM no navegador. Foi assim que a sessão de 15/09/2026
+validou as mudanças da home sem gastar um centavo.
+
+**O ambiente de testes ainda não existe.** Montá-lo de verdade significa um segundo projeto no
+Supabase com credenciais próprias, mais as credenciais de teste do Mercado Pago outra vez, num
+arquivo `.env` separado do de produção. Isso foi pedido mas não foi feito — **confirmar o que
+existe antes de supor que há um ambiente de teste disponível.** É o primeiro candidato a tarefa da
+próxima sessão.
 
 ### Histórico de bugs reais encontrados (todos já corrigidos)
 
@@ -418,8 +450,9 @@ principal (formulário → QR → confirmação) chegou a ser conferido visualme
 
 1. ~~Migração no Supabase~~, ~~credenciais~~, ~~webhook~~, ~~publicar~~ — feitos.
 2. ~~Trocar para credenciais de produção~~ — feito em 15/09/2026.
-3. **Resetar a sequência do peito antes de divulgar**, porque os testes consumiram números:
-   `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do Supabase.
+3. ~~Resetar a sequência do peito antes de divulgar~~ — **superado, e agora perigoso.** A
+   divulgação já aconteceu e há inscritos reais; ver "A tabela não está mais vazia" logo abaixo do
+   Status atual. **Não rodar mais `alter sequence ... restart with 1`.**
 4. ~~Cadastrar a URL do webhook na aplicação de produção~~ — não era necessário: o webhook já
    estava configurado e, em produção, a assinatura passou a validar corretamente.
 5. **Verificar um domínio no Resend** quando quiser voltar a enviar email de confirmação. Por ora
@@ -589,21 +622,15 @@ O projeto tem seis subagentes definidos em `.claude/agents/` (escopo de projeto 
 
 ## Pendências / perguntas em aberto para quando o usuário retomar
 
-### Bloqueiam a divulgação ao público
+### ~~Bloqueiam a divulgação ao público~~ — superado
 
-Continuam pendentes em 15/09/2026, e **a ordem entre eles importa** — foi por isso que a lista
-mudou de forma nesta sessão. Resetar a sequência antes do teste pago faz o próprio teste consumir
-o peito nº 1, obrigando a resetar de novo:
+**A divulgação já aconteceu e há inscritos reais.** Esta lista está mantida só como registro
+histórico; nenhum item dela deve ser executado hoje. Em particular, o antigo passo de resetar a
+sequência do peito **virou uma ação destrutiva** — ver "A tabela não está mais vazia".
 
-1. **Uma inscrição paga de verdade, feita pelo usuário.** É o único teste que nunca pôde ser feito
-   aqui: o sandbox aprovava sozinho, produção é Pix real. Conferir que o QR abre no app do banco,
-   que o peito aparece e que a inscrição fica "Paga" no painel.
-2. **Apagar esse registro de teste** na tabela `inscricoes`.
-3. **Só então resetar a sequência do número de peito**, para que o primeiro inscrito de verdade
-   pegue o nº 1: `alter sequence public.numero_peito_seq restart with 1;` no SQL Editor do
-   Supabase.
-4. Ao divulgar, **avisar que o número de peito se recupera em `/consulta`** (CPF + data de
-   nascimento), porque o email de confirmação continua desligado na prática.
+O único item que continua valendo é o de comunicação: ao divulgar, **avisar que o número de peito
+se recupera em `/consulta`** (CPF + data de nascimento), porque o email de confirmação continua
+desligado na prática.
 
 ### Decisões em aberto
 
@@ -624,8 +651,9 @@ o peito nº 1, obrigando a resetar de novo:
 
 ### Lembretes operacionais
 
-- Se novos testes de inscrição forem feitos, **apagar os registros e resetar a sequência de novo**
-  antes do lançamento.
+- **Não fazer inscrição de teste em produção.** A regra antiga ("apagar os registros e resetar a
+  sequência depois") valia quando a tabela só tinha teste; hoje há inscritos reais e o reset da
+  sequência virou destrutivo — ver "A tabela não está mais vazia".
 - Cobranças Pix não pagas expiram sozinhas e aparecem no painel do Mercado Pago. As que sobraram
   das verificações são inofensivas.
 - O cron de reconciliação roda **uma vez por dia** porque o plano Hobby da Vercel rejeita, no
@@ -679,8 +707,9 @@ Isto não é um projeto de brinquedo rodando local. Antes de qualquer agente toc
 2. **O banco é compartilhado e é o de produção.** Não há ambiente de staging. Toda escrita em
    `inscricoes` afeta dados reais. Prefira leitura; para escrita, use ids explícitos e apague
    depois.
-3. **A tabela deve ficar vazia até o lançamento.** Se sobrar registro de teste, apague e peça ao
-   usuário para resetar `numero_peito_seq`.
+3. **A tabela tem inscritos reais** (desde 15/09/2026). Não criar registro de teste nela, e
+   **não resetar `numero_peito_seq`** — o reset agora gera números repetidos e quebra a
+   confirmação de pagamento. Ver "A tabela não está mais vazia".
 4. **Nunca publique (`git push`) sem o usuário mandar.** Todo push para `main` redeploya em
    produção.
 5. **Segredos ficam só em `.env.local`** (gitignored) e nas variáveis da Vercel. O usuário tem
